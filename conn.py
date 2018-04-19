@@ -8,6 +8,7 @@ from DBConn import oracle_util
 from datetime import timedelta, datetime
 from geo import calc_dist, bl2xy
 import math
+import pre
 
 
 class TaxiData:
@@ -43,7 +44,7 @@ def get_jjq(conn, veh):
 
 
 def get_vehicle(conn):
-    sql = "select vehicle_num from tb_vehicle where rownum <= 10"
+    sql = "select vehicle_num from tb_vehicle where rownum < 10"
     cursor = conn.cursor()
     cursor.execute(sql)
     veh_list = []
@@ -100,10 +101,11 @@ def print_data(trace):
 
 
 def print_jjq(jjq_list):
+    print "================jjq========================"
     for data in jjq_list:
-        jc_time, dep_time = data[3], data[2]
+        jc_time, dep_time, zd_time, zx_time = data[3], data[2], data[4], data[5]
         str_dep = dep_time.strftime('%Y-%m-%d %H:%M:%S')
-        print str_dep, jc_time
+        print str_dep, jc_time, zd_time, zx_time
 
 
 def split_trace(veh, trace):
@@ -128,6 +130,7 @@ def split_trace(veh, trace):
 
 
 def print_trace(trace, trace_list):
+    print "================trace========================"
     for bi, ei, sp in trace_list:
         t = trace[ei].stime - trace[bi].stime
         print trace[ei].stime, t.total_seconds() / 60
@@ -186,6 +189,30 @@ def get_max_match(trace, trace_list, jjq, offset):
     return match, sel_off
 
 
+def get_max_match1(trace, trace_list, jjq, offset):
+    m, n = len(trace_list), len(jjq)
+    max_match_cnt = 0
+    match = {}
+    sel_off = None      # 以计价器时间为基准的偏移时间
+    for off in offset:
+        cnt, jq_j = 0, 0
+        temp_match = {}
+        for i in range(n):
+            jjq_dep, jc = jjq[i][2:4]
+            tar_dep = jjq_dep + timedelta(minutes=off)
+            for j in range(jq_j, m):
+                bi, ei, sp = trace_list[j]
+                gps_dep = trace[ei].stime
+                if is_near_time(tar_dep, gps_dep) and is_near_span(jc, sp):
+                    cnt += 1
+                    temp_match[i] = j
+                    jq_j = j + 1
+                    break
+        if cnt > max_match_cnt:
+            max_match_cnt, match, sel_off = cnt, temp_match, off
+    return match, sel_off
+
+
 def match_jjq_gps(trace, trace_list, jjq):
     """
     匹配计价器与GPS数据
@@ -195,32 +222,40 @@ def match_jjq_gps(trace, trace_list, jjq):
     :return: 
     """
     offset = get_offset(trace, trace_list, jjq)
-    match, offset_time = get_max_match(trace, trace_list, jjq, offset)
+    match, offset_time = get_max_match1(trace, trace_list, jjq, offset)
     match_list = sorted(match.items(), key=lambda d: d[0])
     for i, j in match_list:
-        jjq_dep, jc = jjq[i][2:4]
+        jjq_dep, jc, zd, zx = jjq[i][2:6]
         adj_dep = jjq_dep + timedelta(minutes=offset_time)
         bi, ei, sp = trace_list[j]
         gps_dep = trace[ei].stime
-        print adj_dep, jc, gps_dep, '{0:.2f}'.format(sp)
+        print jjq_dep, adj_dep, jc, 'zx: ' + str(zx), 'zd: ' + str(zd), gps_dep, '{0:.2f}'.format(sp)
 
 
 def main():
     conn = oracle_util.get_connection()
     veh_list = get_vehicle(conn)
     # get_jjq(conn, 'AT8542')
+    # veh_list = pre.get_new_veh()
+
     for veh in veh_list:
-        print veh
+        print veh,
         begin_time = datetime.strptime('2017-09-01 00:00:00', '%Y-%m-%d %H:%M:%S')
         trace = get_gps_data(conn, begin_time, veh)
+        print len(trace),
         pre_trace(trace)
         jjq = get_jjq(conn, veh)
+
         # print_jjq(jjq)
         # print_data(trace)
         t_list = split_trace(veh, trace)
+        print len(jjq), len(t_list)
+
         # print_trace(trace, t_list)
         if len(trace) != 0:
             match_jjq_gps(trace, t_list, jjq)
+
+
     conn.close()
 
 
