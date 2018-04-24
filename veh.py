@@ -10,7 +10,7 @@ from time import clock
 
 def get_vehicle(conn):
     cursor = conn.cursor()
-    sql = 'select vhic from tb_citizen_ss'
+    sql = 'select vehicle_num from tb_vehicle where gps_no_data = 1 and mark != 101'
 
     cursor.execute(sql)
     veh_list = []
@@ -21,26 +21,20 @@ def get_vehicle(conn):
     for veh in veh_set:
         veh_list.append(veh)
 
-    sql = "select * from tb_gps_1709 where vehicle_num = :1 and rownum <= 1"
-    hz_list = []
-    for veh in veh_list:
-        tup = (veh,)
-        cursor.execute(sql, tup)
-        in_hz = False
-        for _ in cursor.fetchall():
-            in_hz = True
-        if in_hz:
-            hz_list.append(veh)
+    return veh_list
 
-    return hz_list
+
+def get_last_digit(veh):
+    return int(veh[-2:])
 
 
 def save_veh(conn, veh_list):
     cursor = conn.cursor()
     tup_list = []
     for veh in veh_list:
-        tup_list.append((veh, ))
-    sql = "insert into tb_vehicle (vehicle_num) values(:1)"
+        mark = 102
+        tup_list.append((mark, veh))
+    sql = "update tb_vehicle set mark = :1 where vehicle_num = :2"
     cursor.executemany(sql, tup_list)
     conn.commit()
     cursor.close()
@@ -50,6 +44,7 @@ def main():
     conn = oracle_util.get_connection()
     veh_list = get_vehicle(conn)
     save_veh(conn, veh_list)
+    conn.close()
 
 
 main()

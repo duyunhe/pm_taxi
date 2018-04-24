@@ -4,17 +4,47 @@
 # @简介    : 测试连接和计价器数据
 # @File    : conn.py
 
-from DBConn import oracle_util
+import cx_Oracle
 from datetime import timedelta, datetime
-from geo import calc_dist, bl2xy
-import math
+from math import *
+import numpy as np
+from geo import bl2xy, calc_dist
 import pre
+from multiprocessing import Process, Pool
+import time
+import os
+import random
+
+
+def get_distance(latA, lonA, latB, lonB):
+    ra = 6378140  # radius of equator: meter
+    rb = 6356755  # radius of polar: meter
+    flatten = (ra - rb) / ra  # Partial rate of the earth
+    if latA == latB and lonA == lonB:
+        return 0.0
+    # change angle to radians
+    radLatA = radians(latA)
+    radLonA = radians(lonA)
+    radLatB = radians(latB)
+    radLonB = radians(lonB)
+
+    pA = atan(rb / ra * tan(radLatA))
+    pB = atan(rb / ra * tan(radLatB))
+    x = acos(sin(pA) * sin(pB) + cos(pA) * cos(pB) * cos(radLonA - radLonB))
+    try:
+        c1 = (sin(x) - x) * (sin(pA) + sin(pB)) ** 2 / cos(x / 2) ** 2
+        c2 = (sin(x) + x) * (sin(pA) - sin(pB)) ** 2 / sin(x / 2) ** 2
+    except ZeroDivisionError:
+        return 0.0
+    dr = flatten / 8 * (c1 - c2)
+    distance = ra * (x + dr)
+    return distance
 
 
 class TaxiData:
-    def __init__(self, px, py, stime, state, speed):
+    def __init__(self, px, py, stime, state, speed, car_state):
         self.px, self.py, self.stime, self.state, self.speed = px, py, stime, state, speed
-        self.stop_index = 0
+        self.stop_index, self.dist, self.car_state = 0, 0, car_state
 
     def set_index(self, index):
         self.stop_index = index
@@ -29,22 +59,42 @@ def cmp1(data1, data2):
         return 0
 
 
-def get_jjq(conn, veh):
-    sql = "select vhic, shangche, xiache, zhongduan, zhongxin from TB_JJQ t where vhic = '{0}'" \
-          " and shangche >= to_date('2017-09-01 00:00:00', 'yyyy-mm-dd hh24:mi:ss') and " \
-          "shangche < to_date('2017-09-02 00:00:00', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format(veh)
+def get_jjq(conn, veh, begin_time):
+    str_bt = begin_time.strftime('%Y-%m-%d %H:%M:%S')
+    end_time = begin_time + timedelta(days=1)
+    str_et = end_time.strftime('%Y-%m-%d %H:%M:%S')
+    sql = "select vhic, shangche, xiache, zhongduan, zhongxin, jicheng from TB_JJQ t where vhic = '{0}'" \
+          " and shangche >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') and " \
+          "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format(veh, str_bt, str_et)
     cursor = conn.cursor()
     cursor.execute(sql)
     rec_list = []
     for item in cursor.fetchall():
-        dep_time, dest_time, zd, zx = item[1:]
+        dep_time, dest_time, zd, zx, lc = item[1:]
+        lc = int(lc)
+        try:
+            sp = zx - dest_time
+            ys = int(sp.total_seconds())
+        except TypeError:
+            ys = -1
         dt = dest_time - dep_time
-        rec_list.append((veh, dep_time, dest_time, dt.total_seconds() / 60, zd, zx))
+        rec_list.append((veh, dep_time, dest_time, dt.total_seconds() / 60, zd, zx, ys, lc))
     return rec_list
 
 
 def get_vehicle(conn):
-    sql = "select vehicle_num from tb_vehicle where rownum < 10"
+    sql = "select vehicle_num from tb_vehicle where el = 0 and gps_no_data = 0 and rownum < 10000"
+    cursor = conn.cursor()
+    cursor.execute(sql)
+    veh_list = []
+    for item in cursor.fetchall():
+        veh = item[0]
+        veh_list.append(veh)
+    return veh_list
+
+
+def get_vehicle_by_mark(conn, mark):
+    sql = "select vehicle_num from tb_vehicle where mark = '{0}' and rownum <= 10000".format(mark)
     cursor = conn.cursor()
     cursor.execute(sql)
     veh_list = []
@@ -58,7 +108,7 @@ def get_gps_data(conn, begin_time, veh):
     str_bt = begin_time.strftime('%Y-%m-%d %H:%M:%S')
     end_time = begin_time + timedelta(days=1)
     str_et = end_time.strftime('%Y-%m-%d %H:%M:%S')
-    sql = "select px, py, speed_time, state, speed from " \
+    sql = "select px, py, speed_time, state, speed, carstate from " \
           "TB_GPS_1709 t where speed_time >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') " \
           "and speed_time < to_date('{2}', 'yyyy-MM-dd hh24:mi:ss')" \
           " and vehicle_num = '{0}'".format(veh, str_bt, str_et)
@@ -74,7 +124,8 @@ def get_gps_data(conn, begin_time, veh):
             state = int(item[3])
             stime = item[2]
             speed = float(item[4])
-            taxi_data = TaxiData(px, py, stime, state, speed)
+            carstate = int(item[5])
+            taxi_data = TaxiData(px, py, stime, state, speed, carstate)
             trace.append(taxi_data)
     # print len(trace)
     trace.sort(cmp1)
@@ -85,27 +136,31 @@ def get_gps_data(conn, begin_time, veh):
         if last_point is not None:
             dist = calc_dist([cur_point.px, cur_point.py], [last_point.px, last_point.py])
             del_time = (cur_point.stime - last_point.stime).total_seconds()
-            if dist > 2000 and del_time < 60:
+            if data.speed > 140:
+                continue
+            if dist > data.speed * 3.6 * del_time * 2:
                 continue
             else:
+                data.dist = dist
                 new_trace.append(data)
         else:
+            data.dist = 0
             new_trace.append(data)
         last_point = cur_point
     return new_trace
 
 
-def print_data(trace):
-    for data in trace:
-        print data.state, data.speed, data.stime
+def print_data(trace, bi, ei):
+    for data in trace[bi:ei + 1]:
+        print data.state, data.car_state, data.speed, data.stime, data.px, data.py, data.dist
 
 
 def print_jjq(jjq_list):
     print "================jjq========================"
     for data in jjq_list:
-        jc_time, dep_time, zd_time, zx_time = data[3], data[2], data[4], data[5]
-        str_dep = dep_time.strftime('%Y-%m-%d %H:%M:%S')
-        print str_dep, jc_time, zd_time, zx_time
+        dep_time, jc_time, dest_time, zd_time, zx_time = data[1], data[3], data[2], data[4], data[5]
+        str_dep = dest_time.strftime('%Y-%m-%d %H:%M:%S')
+        print 'sc: ' + str(dep_time), 'xc: ' + str(str_dep), jc_time, 'zd: ' + str(zd_time), 'zx: ' + str(zx_time)
 
 
 def split_trace(veh, trace):
@@ -133,7 +188,7 @@ def print_trace(trace, trace_list):
     print "================trace========================"
     for bi, ei, sp in trace_list:
         t = trace[ei].stime - trace[bi].stime
-        print trace[ei].stime, t.total_seconds() / 60
+        print trace[bi].stime, trace[ei].stime, t.total_seconds() / 60
 
 
 def pre_trace(trace):
@@ -144,12 +199,12 @@ def pre_trace(trace):
 
 
 def is_near_span(x, y):
-    return math.fabs(x - y) < 2
+    return fabs(x - y) < 2
 
 
 def is_near_time(x, y):
     sp = y - x
-    return math.fabs(sp.total_seconds()) < 60
+    return fabs(sp.total_seconds()) < 60
 
 
 def get_offset(trace, trace_list, jjq):
@@ -191,7 +246,7 @@ def get_max_match(trace, trace_list, jjq, offset):
 
 def get_max_match1(trace, trace_list, jjq, offset):
     m, n = len(trace_list), len(jjq)
-    max_match_cnt = 0
+    max_match_cnt = 1
     match = {}
     sel_off = None      # 以计价器时间为基准的偏移时间
     for off in offset:
@@ -213,27 +268,98 @@ def get_max_match1(trace, trace_list, jjq, offset):
     return match, sel_off
 
 
+def get_trace_dist(trace, bi, ei):
+    """
+    :param trace: 轨迹(list)
+    :param bi: 起点
+    :param ei: 终点
+    :return: 
+    """
+    trace_len = ei - bi + 1     # 轨迹长度
+    final_dist = 0
+    cnt_imp, cnt_spd = 0, 0
+    last_speed = -1
+    for i in range(bi + 1, ei + 1):
+        data = trace[i]
+        if data.car_state == 1:
+            cnt_imp += 1
+        if data.speed == last_speed:
+            cnt_spd += 1
+        last_speed = data.speed
+        final_dist += data.dist
+    if float(cnt_imp) / trace_len > 0.15:
+        return -1
+    if float(cnt_spd) / trace_len > 0.3:
+        return -2
+    return final_dist
+
+
 def match_jjq_gps(trace, trace_list, jjq):
     """
     匹配计价器与GPS数据
     :param trace: gps轨迹 (list)
     :param trace_list: 分割后的每段gps的起点和终点index (list)
-    :param jjq: 计价器数据 (list)  (veh, dep_time, dest_time, jc_time, zd, zx)
+    :param jjq: 计价器数据 (list)  (veh, dep_time, dest_time, jc_time, zd, zx, yanshi)
     :return: 
     """
     offset = get_offset(trace, trace_list, jjq)
     match, offset_time = get_max_match1(trace, trace_list, jjq, offset)
+    diff_list = []
+    diff_median, diff_mean = None, None
     match_list = sorted(match.items(), key=lambda d: d[0])
     for i, j in match_list:
-        jjq_dep, jc, zd, zx = jjq[i][2:6]
-        adj_dep = jjq_dep + timedelta(minutes=offset_time)
+        jjq_dep, jjq_dest, jc, zd, zx, _, lc = jjq[i][1:]
+        adj_dep = jjq_dest + timedelta(minutes=offset_time)
         bi, ei, sp = trace_list[j]
         gps_dep = trace[ei].stime
-        print jjq_dep, adj_dep, jc, 'zx: ' + str(zx), 'zd: ' + str(zd), gps_dep, '{0:.2f}'.format(sp)
+        dist = get_trace_dist(trace, bi, ei)
+        dist_diff = dist - lc * 100
+
+        if dist >= 0:
+            print j, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'adj: ' + str(adj_dep), jc, 'zx: ' + str(zx), \
+                'zd: ' + str(zd), gps_dep, '{0:.2f}'.format(sp), 'lc: ' + str(lc), 'dist: ' + str(dist)
+            diff_list.append(dist_diff)
+    if len(diff_list) != 0:
+        vec = np.array(diff_list)
+        diff_median = np.median(vec)
+        diff_mean = np.mean(vec)
+    return offset_time, match_list, diff_median, diff_mean
+
+
+def process_jjq(jjq_list):
+    vec = []
+    for jjq in jjq_list:
+        zx, zd, ys = jjq[4:7]
+        vec.append(ys)
+    n = len(vec)
+    if n == 0:
+        return 0.0, 0.0, 0
+    arr = np.array(vec)
+    # print vec
+    qu, qd = np.percentile(arr, 75), np.percentile(arr, 25)
+    itv = qu - qd
+    zu, zd = qu + 1.5 * itv, qd - 1.5 * itv
+    vec = []
+    for i in range(n):
+        if zd <= arr[i] <= zu:
+            vec.append(arr[i])
+    arr = np.array(vec)
+
+    return np.std(arr), np.median(arr), n
+
+
+def process_data(trace):
+    if len(trace) == 0:
+        return 0
+    cnt = 0
+    for data in trace:
+        if data.car_state == 0:
+            cnt += 1
+    return 100.0 * cnt / len(trace)
 
 
 def main():
-    conn = oracle_util.get_connection()
+    conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
     veh_list = get_vehicle(conn)
     # get_jjq(conn, 'AT8542')
     # veh_list = pre.get_new_veh()
@@ -245,6 +371,7 @@ def main():
         print len(trace),
         pre_trace(trace)
         jjq = get_jjq(conn, veh)
+        process_jjq(jjq)
 
         # print_jjq(jjq)
         # print_data(trace)
@@ -252,11 +379,143 @@ def main():
         print len(jjq), len(t_list)
 
         # print_trace(trace, t_list)
-        if len(trace) != 0:
-            match_jjq_gps(trace, t_list, jjq)
-
+        # if len(trace) != 0:
+        #     match_jjq_gps(trace, t_list, jjq)
 
     conn.close()
 
 
-main()
+def zx_with_zd_time(mark, begin_time):
+    bt = time.clock()
+    conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
+
+    veh_list = get_vehicle_by_mark(conn, mark)
+    veh_list = ['ATE135']
+    cursor = conn.cursor()
+    tup_list = []
+    sql = "update tb_vehicle set el = :1, gps_no_data = :2, dif2 = :3, match_point = :4, jjq_point" \
+          "=:5, zd_median = :6, zd_mean = :7 where vehicle_num = :8"
+    idx = 0
+    for veh in veh_list:
+        # print veh
+        idx += 1
+        if idx % 10 == 0:
+            print mark, idx
+        # begin_time = datetime.strptime('2017-09-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+        jjq = get_jjq(conn, veh, begin_time)
+        trace = get_gps_data(conn, begin_time, veh)
+        # print_data(trace)
+        pre_trace(trace)
+        t_list = split_trace(veh, trace)
+        # print_jjq(jjq)
+        # print_trace(trace, t_list)
+        # ys_std, ys_median = process_jjq(jjq)
+        dif, dist_med, dist_mean = None, None, None
+        gps_no_data, el = 0, 0
+        if len(trace) < 360:
+            gps_no_data = 1
+        elif len(jjq) > 0 and len(t_list) == 0:
+            el = 1
+        match = []
+        if len(trace) != 0:
+            dif, match, dist_med, dist_mean = match_jjq_gps(trace, t_list, jjq)
+            if dif is not None:
+                dif = dif * 60
+        tup = (el, gps_no_data, dif, len(match), len(jjq), dist_med, dist_mean, veh)
+        tup_list.append(tup)
+
+    cursor.executemany(sql, tup_list)
+    # conn.commit()
+    conn.close()
+
+    et = time.clock()
+    # print_data(trace, t_list[13][0], t_list[13][1])
+    # print "mark cost ", et - bt
+
+
+def ys_with_jjq(mark, begin_time):
+    bt = time.clock()
+    conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
+
+    veh_list = get_vehicle_by_mark(conn, mark)
+    cursor = conn.cursor()
+    tup_list = []
+    idx = 0
+
+    sql = "update tb_vehicle set ys_med = :1, zd_std = :2, jjq_point = :3 where vehicle_num = :4"
+    for veh in veh_list:
+        idx += 1
+        if idx % 10 == 0:
+            print mark, idx
+        jjq = get_jjq(conn, veh, begin_time)
+        ys_std, ys_median, jjq_len = process_jjq(jjq)
+        tup = (ys_median, ys_std, jjq_len, veh)
+        tup_list.append(tup)
+
+    cursor.executemany(sql, tup_list)
+    # conn.commit()
+    conn.close()
+
+    et = time.clock()
+    print "jjq cost ", et - bt
+
+
+def cmp_gps_meter(mark, begin_time):
+    conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
+    veh_list = get_vehicle_by_mark(conn, mark)
+    # veh_list = ['AT2931']
+    cursor = conn.cursor()
+    tup_list = []
+    sql = "update tb_vehicle set carstate_per = :0 where vehicle_num = :1"
+    idx = 0
+    for veh in veh_list:
+        # print veh,
+        idx += 1
+        if idx % 10 == 0:
+            print mark, idx
+        # begin_time = datetime.strptime('2017-09-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+        trace = get_gps_data(conn, begin_time, veh)
+        per = process_data(trace)
+
+
+def empty_or_load_check(mark, begin_time):
+    """
+    检查空重车不变化的情况
+    :return: 
+    """
+    conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
+    veh_list = get_vehicle_by_mark(conn, mark)
+    # veh_list = ['AT2931']
+    cursor = conn.cursor()
+    tup_list = []
+    sql = "update tb_vehicle set carstate_per = :0 where vehicle_num = :1"
+    idx = 0
+    for veh in veh_list:
+        # print veh,
+        idx += 1
+        if idx % 10 == 0:
+            print mark, idx
+        # begin_time = datetime.strptime('2017-09-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+        trace = get_gps_data(conn, begin_time, veh)
+        per = process_data(trace)
+        # t_list = split_trace(veh, trace)
+        # print_trace(trace, t_list)
+        # jjq = get_jjq(conn, veh, begin_time)
+        # print len(trace), len(jjq), len(t_list)
+        # gps_no_data, el = 0, 0
+        # if len(trace) < 360:
+        #     gps_no_data = 1
+        # elif len(jjq) > 0 and len(t_list) == 0:
+        #     el = 1
+        tup = (per, veh)
+        tup_list.append(tup)
+        # cursor.execute(sql)
+
+    cursor.executemany(sql, tup_list)
+    conn.commit()
+    conn.close()
+
+
+if __name__ == '__main__':
+    bt = datetime.strptime('2017-09-01 00:00:00', '%Y-%m-%d %H:%M:%S')
+    zx_with_zd_time(9, bt)

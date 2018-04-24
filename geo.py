@@ -143,13 +143,6 @@ def draw_raw(traj, ax):
     ax.plot(xlist, ylist, marker='o', linestyle='--', color='k', lw=1)
 
 
-def calc_dist(pt0, pt1):
-    v0 = np.array([pt0[0], pt0[1]])
-    v1 = np.array([pt1[0], pt1[1]])
-    dist = np.linalg.norm(v0 - v1)
-    return dist
-
-
 def geo2addr(lng, lat):
     ulr = "http://restapi.amap.com/v3/geocode/regeo?location={0},{1}" \
           "&key=0a54a59bdc431189d9405b3f2937921a" \
