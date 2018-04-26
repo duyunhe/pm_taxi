@@ -10,8 +10,8 @@ import numpy as np
 
 color = ['r-', 'b-', 'g-', 'c-', 'm-', 'y-', 'c-', 'r-', 'b-', 'orchid', 'm--', 'y--', 'c--', 'k--', 'r:']
 region = {'primary': 0, 'secondary': 1, 'tertiary': 2,
-          'unclassified': 5, 'trunk': 3, 'trunk_link': 6,
-          'primary_link': 7, 'secondary_link': 8, 'residential': 9}
+          'unclassified': 5, 'trunk': 3, 'service': 4, 'trunk_link': 6,
+          'primary_link': 7, 'secondary_link': 8}
 
 EDGE_ONEWAY = 3
 EDGES = 2
@@ -91,8 +91,11 @@ def draw_map():
             x.append(map_node_dict[nodeid].point[0])
             y.append(map_node_dict[nodeid].point[1])
 
-        c = color[region[pl['highway']]]
-        plt.plot(x, y, c, alpha=0.3)
+        try:
+            c = color[region[pl['highway']]]
+            plt.plot(x, y, c, alpha=0.3)
+        except KeyError:
+            continue
         # if 'name' in pl:
         #     name = pl['name']
         #     plt.text(x[0] + 10, y[0] + 10, name)
@@ -133,6 +136,16 @@ def draw_point(point, c):
     :return: 
     """
     plt.plot([point[0]], [point[1]], c, markersize=4)
+
+
+def get_trace_dist(trace):
+    last_point = None
+    dist = 0.0
+    for point in trace:
+        if last_point is not None:
+            dist += calc_dist(point, last_point)
+        last_point = point
+    return dist
 
 
 def read_xml(filename):
@@ -345,27 +358,28 @@ def get_latter_point(point, last_point, node, edge, last_edge, cnt=-1):
                 node_set.add(nd)
 
     # 寻找最近的匹配
-    min_dist, sel_edge = 1e20, None
-    if cnt == 10:
-        draw_edge_set(edge, edge_set, node)
+    min_score, min_dist, sel_edge = 1e20, None, None
+    # if cnt == 10:
+    #     draw_edge_set(edge, edge_set, node)
     for i in edge_set:
         e = edge[i]
         x0, y0, x1, y1 = edge2xy(e, node)
         w0, w1 = 1.0, 10.0
-        dist = w0 * point2segment(point[0], point[1], x0, y0, x1, y1)\
-               + w1 * (1 - calc_included_angle(last_point, point, [x0, y0], [x1, y1]))
-        if min_dist > dist:
-            min_dist, sel_edge = dist, e
+        dist = point2segment(point[0], point[1], x0, y0, x1, y1)
+        score = w0 * dist + w1 * (1 - calc_included_angle(last_point, point, [x0, y0], [x1, y1]))
+        if min_score > score:
+            min_score, min_dist, sel_edge = score, dist, e
 
     if sel_edge is None:
-        return 0, 0, sel_edge, edge_set
+        return 0, 0, sel_edge, edge_set, 0, None
     x0, y0, x1, y1 = edge2xy(sel_edge, node)
     x, y = point[0:2]
     rx, ry, _ = point_project(x, y, x0, y0, x1, y1)
     trace = get_trace_from_project(node, last_point, last_edge, [rx, ry], sel_edge, cnt)
+    trace_dist = get_trace_dist(trace)
     # draw_seg(trace, 'b')
 
-    return rx, ry, sel_edge, edge_set, None
+    return rx, ry, sel_edge, edge_set, trace_dist, min_dist
 
 
 def get_mod_points0(kdt, X, traj_order, node, edge):
@@ -387,7 +401,7 @@ def get_mod_points1(kdt, X, traj_order, node, edge):
     """
     traj_mod = []
     first_point = True
-    last_point = None
+    last_point, last_edge = None, None
     # traj_point: [x, y]
     cnt = 0
     for traj_point in traj_order:
@@ -398,13 +412,11 @@ def get_mod_points1(kdt, X, traj_order, node, edge):
             last_point = traj_point
         elif calc_dist(last_point, traj_point) > 20:
             # 太近的点不予考虑，列为subpoint，在此处略过，后面再插入
-            px, py, last_edge, can_set, trace = get_latter_point(traj_point, last_point, node, edge, last_edge, cnt)
+            px, py, last_edge, can_set, trace_dist, min_dist = \
+                get_latter_point(traj_point, last_point, node, edge, last_edge, cnt)
             draw_point(traj_point, 'co')
             traj_mod.append([px, py])
             last_point = traj_point
-        # print cnt
-        if cnt == 10:
-            break
         cnt += 1
     return traj_mod
 

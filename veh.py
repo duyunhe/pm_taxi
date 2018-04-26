@@ -6,6 +6,7 @@
 
 from DBConn import oracle_util
 from time import clock
+import numpy as np
 
 
 def get_vehicle(conn):
@@ -21,6 +22,17 @@ def get_vehicle(conn):
     for veh in veh_set:
         veh_list.append(veh)
 
+    return veh_list
+
+
+def get_vehicle_by_mark(conn, mark):
+    sql = "select vehicle_num from tb_vehicle where mark = '{0}' and rownum <= 10000".format(mark)
+    cursor = conn.cursor()
+    cursor.execute(sql)
+    veh_list = []
+    for item in cursor.fetchall():
+        veh = item[0]
+        veh_list.append(veh)
     return veh_list
 
 
@@ -40,10 +52,22 @@ def save_veh(conn, veh_list):
     cursor.close()
 
 
+def calc_static(conn):
+    cursor = conn.cursor()
+    sql = "select ys_med - dif2 from TB_VEHICLE t where zd_std < 60 and match_point > 10"
+    cursor.execute(sql)
+    itv_list = []
+    for item in cursor.fetchall():
+        itv = int(item[0])
+        itv_list.append(itv)
+    vec = np.array(itv_list)
+    print np.mean(vec), np.median(vec)
+
+
 def main():
     conn = oracle_util.get_connection()
-    veh_list = get_vehicle(conn)
-    save_veh(conn, veh_list)
+    # veh_list = get_vehicle(conn)
+    calc_static(conn)
     conn.close()
 
 
