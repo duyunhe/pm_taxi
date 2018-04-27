@@ -1,13 +1,16 @@
 # coding=utf-8
 from xml.etree import ElementTree as ET
 import matplotlib.pyplot as plt
+from traj import load_traj, load_trace
 from sklearn.neighbors import KDTree
 import math
 import Queue
-from geo import point2segment, point_project, calc_dist, bl2xy, is_near_segment, calc_included_angle
+from map_struct import DistNode, MapEdge, MapNode
+from geo import point2segment, point_project, calc_dist, bl2xy, is_near_segment, calc_included_angle, point_project_edge
 from time import clock
+import traj
 import numpy as np
-
+fp = open('point.txt', 'w')
 color = ['r-', 'b-', 'g-', 'c-', 'm-', 'y-', 'c-', 'r-', 'b-', 'orchid', 'm--', 'y--', 'c--', 'k--', 'r:']
 region = {'primary': 0, 'secondary': 1, 'tertiary': 2,
           'unclassified': 5, 'trunk': 3, 'service': 4, 'trunk_link': 6,
@@ -26,60 +29,10 @@ map_way = {}
 nodeid_list = []
 
 
-class DistNode(object):
-    def __init__(self, ndid, dist):
-        self.ndid = ndid
-        self.dist = dist
-
-    def __lt__(self, other):
-        return self.dist < other.dist
-
-
-class MapNode(object):
-    """
-    点表示
-    point([px,py]), nodeid, link_list
-    维护dict，key=nodeid, value=MapNode
-    """
-    def __init__(self, point, nodeid):
-        self.point, self.nodeid = point, nodeid
-        self.link_list = []     # 连接到其他点的列表, [[edge0, node0], [edge1, node1]....]
-
-    def add_link(self, edge, node):
-        self.link_list.append([edge, node])
-
-
-class MapEdge(object):
-    """
-    线段表示
-    nodeid_0, nodeid_1,
-    oneway(true or false), edge_index, edge_length
-    维护list[MapEdge]
-    """
-    def __init__(self, nodeid_0, nodeid_1, oneway, edge_index, edge_length):
-        self.nodeid_0, self.nodeid_1 = nodeid_0, nodeid_1
-        self.oneway = oneway
-        self.edge_index = edge_index
-        self.edge_length = edge_length
-
-
-def edge2xy(e, node):
-    return node[e[0]][0], node[e[0]][1], node[e[1]][0], node[e[1]][1]
-
-
-def cal_max_way(way):
-    max_dist = 0
-    for w in way:
-        lx, ly = 0, 0
-        pl = way[w]
-        for t in pl['node']:
-            x, y = t[0], t[1]
-            if lx != 0:
-                dist = math.sqrt((lx - x) ** 2 + (ly - y) ** 2)
-                if max_dist < dist:
-                    max_dist = dist
-            lx, ly = x, y
-    return max_dist
+def edge2xy(e):
+    x0, y0 = e.node0.point[0:2]
+    x1, y1 = e.node1.point[0:2]
+    return x0, y0, x1, y1
 
 
 def draw_map():
@@ -87,9 +40,9 @@ def draw_map():
         pl = map_way[i]
         node_list = pl['node']
         x, y = [], []
-        for nodeid in node_list:
-            x.append(map_node_dict[nodeid].point[0])
-            y.append(map_node_dict[nodeid].point[1])
+        for node in node_list:
+            x.append(node.point[0])
+            y.append(node.point[1])
 
         try:
             c = color[region[pl['highway']]]
@@ -111,10 +64,19 @@ def draw_edge_set(edge, edge_set, node):
         draw_edge(edge[i], 'b', node)
 
 
-def draw_edge(e, c, node):
-    x0, y0, x1, y1 = edge2xy(e, node)
+def draw_edge(e, c):
+    x0, y0, x1, y1 = edge2xy(e)
     x, y = [x0, x1], [y0, y1]
     plt.plot(x, y, c, linewidth=2)
+    plt.text((x[0] + x[-1]) / 2, (y[0] + y[-1]) / 2, '{0},{1}'.format(e.edge_index, e.way_id))
+
+
+def draw_edge_list(edge_list):
+    for edge in edge_list:
+        if edge.oneway is True:
+            draw_edge(edge, 'brown')
+        else:
+            draw_edge(edge, 'b')
 
 
 def draw_nodes(node_list):
@@ -135,22 +97,23 @@ def draw_point(point, c):
     :param point: [x, y]
     :return: 
     """
-    plt.plot([point[0]], [point[1]], c, markersize=4)
+    plt.plot([point[0]], [point[1]], c, markersize=6)
 
 
-def get_trace_dist(trace):
-    last_point = None
-    dist = 0.0
-    for point in trace:
-        if last_point is not None:
-            dist += calc_dist(point, last_point)
-        last_point = point
-    return dist
+def store_link():
+    for edge in map_edge_list:
+        n0, n1 = edge.node0, edge.node1
+        if edge.oneway is True:
+            n0.add_link(edge, n1)
+            n1.add_rlink(edge, n0)
+        else:
+            n0.add_link(edge, n1)
+            n1.add_link(edge, n0)
+            n0.add_rlink(edge, n1)
+            n1.add_rlink(edge, n0)
 
 
-def read_xml(filename):
-    bt = clock()
-    tree = ET.parse(filename)
+def store_node(tree):
     p = tree.find('meta')
     nds = p.findall('node')
     for x in nds:
@@ -159,6 +122,10 @@ def read_xml(filename):
         dx, dy = bl2xy(float(node_dic['lat']), float(node_dic['lon']))
         node = MapNode([dx, dy], nodeid)
         map_node_dict[nodeid] = node
+
+
+def store_edge(tree):
+    p = tree.find('meta')
     wys = p.findall('way')
     for w in wys:
         way_dic = w.attrib
@@ -177,268 +144,515 @@ def read_xml(filename):
         node_in_way = []
         for nd in node_list:
             node_dic = nd.attrib
-            node_in_way.append(node_dic['ref'])
+            node_in_way.append(map_node_dict[node_dic['ref']])
         ref['node'] = node_in_way
-        last_nd = ''
+        last_node = None
         ref['edge'] = []
-        for nd in node_in_way:
-            if last_nd != '':
+        for node in node_in_way:
+            if last_node is not None:
                 edge_index = len(map_edge_list)
                 ref['edge'].append(edge_index)
-                p0, p1 = map_node_dict[last_nd].point, map_node_dict[nd].point
+                p0, p1 = last_node.point, node.point
                 edge_length = calc_dist(p0, p1)
-                edge = MapEdge(last_nd, nd, oneway, edge_index, edge_length)
+                edge = MapEdge(last_node, node, oneway, edge_index, edge_length, wid)
                 map_edge_list.append(edge)
-            last_nd = nd
-
-    for edge in map_edge_list:
-        n0, n1 = edge.nodeid_0, edge.nodeid_1
-        if edge.oneway is True:
-            map_node_dict[n0].add_link(edge, n1)
-        else:
-            map_node_dict[n0].add_link(edge, n1)
-            map_node_dict[n1].add_link(edge, n0)
-    et = clock()
-    print "load xml", et - bt
+            last_node = node
 
 
-def get_trace_from_project(node, last_point, last_edge, cur_point, cur_edge, cnt):
-    pq = Queue.PriorityQueue(maxsize=-1)
-    x0, y0, x1, y1 = edge2xy(last_edge, node)
-    rx, ry, _ = point_project(last_point[0], last_point[1], x0, y0, x1, y1)
-    dist0, dist1 = calc_dist([rx, ry], [x0, y0]), calc_dist([rx, ry], [x1, y1])
-    # 短路径优先，因此每个点只会访问一次
-    # 在出队列时加入访问set中
-    vis_set = set()
-    if last_edge[EDGE_ONEWAY] is True:
-        pq.put(DistNode(last_edge[1], dist1))
-    else:
-        pq.put(DistNode(last_edge[0], dist0))
-        pq.put(DistNode(last_edge[1], dist1))
-
-    x0, y0, x1, y1 = edge2xy(cur_edge, node)
-    sx, sy, _ = point_project(cur_point[0], cur_point[1], x0, y0, x1, y1)
-    dist0, dist1 = calc_dist([sx, sy], [x0, y0]), calc_dist([sx, sy], [x1, y1])
-    obj0, obj1 = None, None
-    if cur_edge[EDGE_ONEWAY] is True:
-        obj0 = cur_edge[0]
-    else:
-        obj0, obj1 = cur_edge[0], cur_edge[1]
-
-    if last_edge == cur_edge:
-        # 就是同一条边
-        return [[rx, ry], [sx, sy]]
-
-    print_node = []
-    # 维护一个反向链表last_node, ndn->...->nd3->nd2->nd1->nd0
-    last_node = {}
-    final_dist = 1e20
-    while not pq.empty():
-        cur_node = pq.get()
-        cur_id, cur_dist = cur_node.ndid, cur_node.dist
-        vis_set.add(cur_id)
-        if cur_id == 'final':
+def calc_node_dict(node):
+    """
+    dijkstra算法计算最短路径
+    保存在node中dist字典内
+    :param node: MapNode
+    :return: null
+    """
+    T = 80000 / 3600 * 10   # dist_thread
+    node_set = set()        # node_set用于判断是否访问过
+    edge_set = set()        # edge_set用于记录能够访问到的边
+    q = Queue.PriorityQueue(maxsize=-1)     # 优先队列优化
+    # initialize
+    init_node = DistNode(node.nodeid, 0)
+    node_set.add(node.nodeid)
+    q.put(init_node)
+    # best first search
+    while not q.empty():
+        cur_node = q.get()
+        if cur_node.dist > T:
             break
-        print_node.append(node[cur_id])
-        # 到达终点
-        if cur_id == obj0:
-            next_dist = cur_dist + dist0
-            pq.put(DistNode('final', next_dist))
-            if next_dist < final_dist:
-                last_node['final'], final_dist = obj0, next_dist
-            continue
-        elif cur_id == obj1:
-            next_dist = cur_dist + dist1
-            pq.put(DistNode('final', next_dist))
-            if next_dist < final_dist:
-                last_node['final'], final_dist = obj1, next_dist
-            continue
-        edge_list = node[cur_id][EDGES]
-        for e, nd in edge_list:
-            next_dist = cur_dist + e[EDGE_LENGTH]
-            if nd in vis_set:
+        for edge, nextid in map_node_dict[cur_node.nodeid].link_list:
+            edge_set.add(edge.edge_index)
+            if nextid in node_set:
                 continue
-            pq.put(DistNode(nd, next_dist))
-            last_node[nd] = cur_id
+            node_set.add(nextid)
+            new_node = DistNode(nextid, cur_node.dist + edge.edge_length)
+            node.dist_dict[nextid] = new_node.dist
+            q.put(new_node)
 
-    path = []
-    cur_id = 'final'
-    while cur_id in last_node:
-        cur_id = last_node[cur_id]
-        path.append(cur_id)
-    path.reverse()
-    trace = []
-    trace.append([rx, ry])
-    for nd in path:
-        trace.append([node[nd][0], node[nd][1]])
-    trace.append([sx, sy])
-    return trace
+    # store edge indexes which can reach
+    node.reach_set = edge_set
 
 
-def make_kdtree(node):
+def read_xml(filename):
+    t = clock()
+    tree = ET.parse(filename)
+    store_node(tree)
+    store_edge(tree)
+    store_link()
+    print 'load map', clock() - t
+
+
+def make_kdtree():
     nd_list = []
-    for key, item in node.items():
+    for key, item in map_node_dict.items():
         nodeid_list.append(key)
-        nd_list.append([item[0], item[1]])
+        nd_list.append(item.point)
     X = np.array(nd_list)
     return KDTree(X, leaf_size=2, metric="euclidean"), X
 
 
-def get_first_point(point, kdt, X, node, edge):
+def get_candidate_first(taxi_data, cnt=-1):
+    """
+    get candidate edges from road network which fit point 
+    :param taxi_data: Taxi_Data  .px, .py, .speed, .stime
+    :return: edge candidate list  list[edge0, edge1, edge...]
+    """
+    kdt, X = make_kdtree()
+    dist, ind = kdt.query([[taxi_data.px, taxi_data.py]], k=50)
+
+    pts = []
+    seg_set = set()
+    # fetch nearest map nodes in network around point, then check their linked edges
+    for i in ind[0]:
+        pts.append([X[i][0], X[i][1]])
+        node_id = nodeid_list[i]
+        edge_list = map_node_dict[node_id].link_list
+        for e, nd in edge_list:
+            seg_set.add(e.edge_index)
+        # here, need reverse link,
+        # for its first node can be far far away, then this edge will not be included
+        edge_list = map_node_dict[node_id].rlink_list
+        for e, nd in edge_list:
+            seg_set.add(e.edge_index)
+
+    edge_can_list = []
+    for i in seg_set:
+        edge_can_list.append(map_edge_list[i])
+
+    return edge_can_list
+
+
+def init_candidate_queue(last_point, last_edge, can_queue, node_set):
+    """
+    initialize the queue, add one or two points of the last edge
+    """
+    _, ac, state = point_project_edge(last_point, last_edge)
+    project_dist = np.linalg.norm(np.array(ac))
+    dist0, dist1 = project_dist, last_edge.edge_length - project_dist
+    if dist0 > last_edge.edge_length:
+        dist0, dist1 = last_edge.edge_length, 0
+
+    if last_edge.oneway:
+        node = last_edge.node1
+        dnode = DistNode(node, dist1)
+        can_queue.put(dnode)
+    else:
+        node = last_edge.node0
+        dnode = DistNode(node, dist0)
+        can_queue.put(dnode)
+        node_set.add(node.nodeid)
+
+        node = last_edge.node1
+        dnode = DistNode(node, dist1)
+        can_queue.put(dnode)
+
+    node_set.add(node.nodeid)
+
+
+def get_candidate_later(cur_point, last_point, last_edge, last_state, itv_time, cnt):
+    """
+    :param cur_point: [px, py]
+    :param last_point: [px, py]
+    :param last_edge: MapEdge
+    :param last_state: direction of vehicle in map edge
+    :return: edge_can_list [edge0, edge1....]
+    """
+    edge_can_list = []
+    T = 100000.0 / 3600 * itv_time          # dist_thread
+    node_set = set()                        # node_set用于判断是否访问过
+    edge_set = set()                        # edge_set用于记录能够访问到的边
+
+    if last_edge.oneway is False or is_near_segment(last_point, cur_point,
+                                                    last_edge.node0.point, last_edge.node1.point):
+        edge_set.add(last_edge.edge_index)
+
+    q = Queue.PriorityQueue(maxsize=-1)     # 优先队列 best first search
+    init_candidate_queue(last_point, last_edge, q, node_set)    # 搜索第一步，加入之前线段中的点
+
+    while not q.empty():
+        dnode = q.get()
+        cur_node, cur_dist = dnode.node, dnode.dist
+        if cur_dist >= T:       # 超过阈值后停止
+            break
+        for edge, node in cur_node.link_list:
+            if node.nodeid in node_set:
+                continue
+            node_set.add(node.nodeid)
+            # 单行线需要判断角度
+            if edge.oneway is False or is_near_segment(last_point, cur_point, edge.node0.point, edge.node1.point):
+                edge_set.add(edge.edge_index)
+            next_dnode = DistNode(node, cur_dist + edge.edge_length)
+            node.prev_node = cur_node
+            q.put(next_dnode)
+
+    for i in edge_set:
+        edge_can_list.append(map_edge_list[i])
+
+    return edge_can_list
+
+
+def _get_mod_point_first(candidate, point):
+    """
+    :param candidate: 
+    :param point: current point
+    :return: project_point, sel_edge
+    """
+    min_dist, sel_edge = 1e20, None
+
+    # first point
+    for edge in candidate:
+        # n0, n1 = edge.node0, edge.nodeid1
+        p0, p1 = edge.node0.point, edge.node1.point
+        dist = point2segment(point, p0, p1)
+        if min_dist > dist:
+            min_dist, sel_edge = dist, edge
+
+    sel_node0, sel_node1 = sel_edge.node0, sel_edge.node1
+    project_point, _, state = point_project(point, sel_node0.point, sel_node1.point)
+    # print sel_edge.edge_index, min_dist
+    return project_point, sel_edge, min_dist
+
+
+def _get_mod_point_later(candidate, point, last_point, cnt):
+    """
+    :param candidate: 
+    :param point: current position point
+    :param last_point: last position point
+    :return: project_point, sel_edge, score
+    """
+    min_score, sel_edge = 1e10, None
+
+    for edge in candidate:
+        p0, p1 = edge.node0.point, edge.node1.point
+        w0, w1 = 1.0, 10.0
+        # 加权计算分数，考虑夹角的影响
+        dist = point2segment(point, p0, p1)
+        angle = calc_included_angle(last_point, point, p0, p1)
+        if not edge.oneway and angle < 0:
+            angle = -angle
+        score = w0 * dist + w1 * (1 - angle)
+        if score < min_score:
+            min_score, sel_edge = score, edge
+        # if cnt == 147:
+        #     print edge.edge_index, dist, score, angle
+
+    if sel_edge is None:
+        return None, None, 0
+    project_point, _, state = point_project(point, sel_edge.node0.point, sel_edge.node1.point)
+    if state == 1:
+        # 点落在线段末端外
+        project_point = sel_edge.node1.point
+    elif state == -1:
+        project_point = sel_edge.node0.point
+    return project_point, sel_edge, min_score
+
+
+def get_mod_point(taxi_data, candidate, last_point, cnt=-1):
+    """
+    get best fit point matched with candidate edges
+    :param taxi_data: Taxi_Data
+    :param candidate: list[edge0, edge1, edge...]
+    :param last_point: last matched point 
+    :return: matched point, matched edge, minimum distance from point to matched edge
+    """
+    point = [taxi_data.px, taxi_data.py]
+    if last_point is None:
+        # 第一个点
+        return _get_mod_point_first(candidate, point)
+    else:
+        return _get_mod_point_later(candidate, point, last_point, cnt)
+
+
+def get_first_point(point, kdt, X):
+    """
+    match point to nearest segment
+    :param point: point to be matched
+    :param kdt: kdtree
+    :param X: 
+    :return: 
+    """
     dist, ind = kdt.query([point], k=30)
 
     pts = []
     seg_set = set()
     for i in ind[0]:
         pts.append([X[i][0], X[i][1]])
-        nid = nodeid_list[i]
-        edge_list = node[nid][EDGES]
+        node_id = nodeid_list[i]
+        edge_list = map_node_dict[node_id].link_list
         for e, nd in edge_list:
-            seg_set.add(e[4])
+            seg_set.add(e.edge_index)
 
     min_dist, sel = 1e20, -1
     for idx in seg_set:
-        n0, n1 = edge[idx][0:2]
-        p0, p1 = node[n0][0:2], node[n1][0:2]
-        dist = point2segment(point[0], point[1], p0[0], p0[1], p1[0], p1[1])
+        n0, n1 = map_edge_list[idx].nodeid0, map_edge_list[idx].nodeid1
+        p0, p1 = map_node_dict[n0].point, map_node_dict[n1].point
+        dist = point2segment(point, p0, p1)
         if min_dist > dist:
             min_dist, sel = dist, idx
 
-    x0, y0, x1, y1 = node[edge[sel][0]][0], node[edge[sel][0]][1], node[edge[sel][1]][0], node[edge[sel][1]][1]
+    sel_edge = map_edge_list[sel]
+    sel_node0, sel_node1 = sel_edge.nodeid0, sel_edge.nodeid1
+    x0, y0 = map_node_dict[sel_node0].point[0:2]
+    x1, y1 = map_node_dict[sel_node1].point[0:2]
     x, y = point[0:2]
     rx, ry, _ = point_project(x, y, x0, y0, x1, y1)
-    return rx, ry, edge[sel]
+    return rx, ry, sel_edge
 
 
-def get_latter_point(point, last_point, node, edge, last_edge, cnt=-1):
-    """
-    :param point: [x, y] 本次待匹配的GPS原始点
-    :param last_point: [x, y] 上次匹配成功的GPS点
-    :param node: 点数据结构
-    :param edge: 边数据结构
-    :param last_edge: 上一次匹配到的道路边
-    :param cnt: 测试用，当前点的index
-    :return: 
-    """
-    # calculate the maximum distance one car can drive at 80km/s speed in 30s
-    dist_thread = 80000 / 120
-    node_set = set()
-    edge_set = set()
-    # first
-    x0, y0, x1, y1 = edge2xy(last_edge, node)
-    rx, ry, _ = point_project(last_point[0], last_point[1], x0, y0, x1, y1)
-    dist0, dist1 = calc_dist([rx, ry], [x0, y0]), calc_dist([rx, ry], [x1, y1])
-    # bfs, FIFO
-    candidate = Queue.Queue(maxsize=-1)
-
-    candidate.put([last_edge[0], dist0])
-    candidate.put([last_edge[1], dist1])
-    node_set.add(last_edge[0])
-    node_set.add(last_edge[1])
-    edge_set.add(last_edge[EDGE_INDEX])
-
-    while not candidate.empty():
-        # 搜索点
-        cur_nodeid, cur_dist = candidate.get()
-        # 遍历边
-        edge_list = node[cur_nodeid][EDGES]
-        for e, nd in edge_list:
-            if nd in node_set:
-                continue
-            # 计算方向
-            n0, n1 = e[0:2]
-            p0, p1 = node[n0][0:2], node[n1][0:2]
-            # 只有和行驶方向相近的边才能入选
-            if e[EDGE_ONEWAY] is False or is_near_segment(last_point, point, p0, p1):
-                edge_set.add(e[EDGE_INDEX])
-            next_dist = cur_dist + e[EDGE_LENGTH]
-            # 判定能否到达新点
-            if next_dist < dist_thread:
-                candidate.put([nd, next_dist])
-                node_set.add(nd)
-
-    # 寻找最近的匹配
-    min_score, min_dist, sel_edge = 1e20, None, None
-    # if cnt == 10:
-    #     draw_edge_set(edge, edge_set, node)
-    for i in edge_set:
-        e = edge[i]
-        x0, y0, x1, y1 = edge2xy(e, node)
-        w0, w1 = 1.0, 10.0
-        dist = point2segment(point[0], point[1], x0, y0, x1, y1)
-        score = w0 * dist + w1 * (1 - calc_included_angle(last_point, point, [x0, y0], [x1, y1]))
-        if min_score > score:
-            min_score, min_dist, sel_edge = score, dist, e
-
-    if sel_edge is None:
-        return 0, 0, sel_edge, edge_set, 0, None
-    x0, y0, x1, y1 = edge2xy(sel_edge, node)
-    x, y = point[0:2]
-    rx, ry, _ = point_project(x, y, x0, y0, x1, y1)
-    trace = get_trace_from_project(node, last_point, last_edge, [rx, ry], sel_edge, cnt)
-    trace_dist = get_trace_dist(trace)
-    # draw_seg(trace, 'b')
-
-    return rx, ry, sel_edge, edge_set, trace_dist, min_dist
-
-
-def get_mod_points0(kdt, X, traj_order, node, edge):
+def get_mod_points0(traj_order):
     """
     White00 algorithm 1, basic algorithm point to point
     """
+    kdt, X = make_kdtree()
     traj_mod = []
     # traj_point: [x, y]
-    for traj_point in traj_order:
-        px, py, last_edge = get_first_point(traj_point, kdt, X, node, edge)
+    for taxi_data in traj_order:
+        px, py, last_edge = get_first_point([taxi_data.px, taxi_data.py], kdt=kdt, X=X)
         traj_mod.append([px, py])
 
     return traj_mod
 
 
-def get_mod_points1(kdt, X, traj_order, node, edge):
+def get_trace_dist(trace):
+    last_point = None
+    trace_dist = 0
+    for point in trace:
+        if last_point is not None:
+            dist = calc_dist(point, last_point)
+            trace_dist += dist
+        last_point = point
+    return trace_dist
+
+
+def get_trace(last_edge, edge, last_point, point):
     """
-    White00 algorithm 3, point to curve with candidates
+    use prev_node to generate the path reversely
+    :param last_edge:  last matched edge
+    :param edge:  current matched edge
+    :param last_point:  last position point
+    :param point:  current matched(projected) point
+    :return:
     """
-    traj_mod = []
+    spoint, _, _ = point_project_edge(last_point, last_edge)
+    if last_edge == edge:
+        return [spoint, point]
+
+    trace = [point]
+    n0, n1 = edge.node0, edge.node1
+    if n0.prev_node == n1:      # n1 is nearer from last point
+        cur_node = n1
+    else:
+        cur_node = n0
+    while cur_node != last_edge.node0 and cur_node != last_edge.node1:
+        trace.append(cur_node.point)
+        cur_node = cur_node.prev_node
+
+    trace.append(cur_node.point)
+    trace.append(spoint)
+    return trace
+
+
+def POINT_MATCH(traj_order):
+    """
+    using point match with topology, 
+    :param traj_order: list of Taxi_Data 
+    :return: 
+    """
     first_point = True
     last_point, last_edge = None, None
-    # traj_point: [x, y]
+    last_state = 0      # 判断双向道路当前是正向或者反向
+    total_dist = 0.0    # 计算路程
+    last_time = None
     cnt = 0
-    for traj_point in traj_order:
+    traj_mod = []
+    for data in traj_order:
         if first_point:
+            # 第一个点
+            candidate_edges = get_candidate_first(data, cnt)
+            # Taxi_Data .px .py .stime .speed
             first_point = False
-            px, py, last_edge = get_first_point(traj_point, kdt, X, node, edge)
-            traj_mod.append([px, py])
-            last_point = traj_point
-        elif calc_dist(last_point, traj_point) > 20:
-            # 太近的点不予考虑，列为subpoint，在此处略过，后面再插入
-            px, py, last_edge, can_set, trace_dist, min_dist = \
-                get_latter_point(traj_point, last_point, node, edge, last_edge, cnt)
-            draw_point(traj_point, 'co')
-            traj_mod.append([px, py])
-            last_point = traj_point
+            mod_point, last_edge, _ = get_mod_point(data, candidate_edges, last_point, cnt)
+            state = 'c'
+            traj_mod.append(mod_point)
+            last_point = mod_point
+            last_time = data.stime
+        else:
+            # 随后的点
+            # 首先判断两个点是否离得足够远
+            T = 15
+            cur_point = [data.px, data.py]
+            interval = calc_dist(cur_point, last_point)
+            interval_time = (data.stime - last_time).total_seconds()
+            # print cnt, interval
+            if interval < T:
+                last_time = data.stime
+                continue
+            candidate_edges = get_candidate_later(cur_point, last_point, last_edge, last_state, interval_time, cnt)
+            # if cnt == 60:
+            #     draw_edge_list(candidate_edges)
+
+            if len(candidate_edges) == 0:
+                # no match, restart
+                candidate_edges = get_candidate_first(data, cnt)
+                mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, None, cnt)
+                state = 'c'
+            else:
+                mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, last_point, cnt)
+                state = 'r'
+
+            offset_dist = calc_dist(mod_point, cur_point)
+            if offset_dist > 60:
+                # 判断是否出现太远的情况
+                candidate_edges = get_candidate_first(data, cnt)
+                # draw_edge_list(candidate_edges)
+                mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, None, cnt)
+                state = 'm'
+
+            if state == 'r':
+                trace = get_trace(last_edge, cur_edge, last_point, mod_point)
+                # draw_seg(trace, 'b')
+                dist = get_trace_dist(trace)
+            else:
+                dist = calc_dist(cur_point, last_point)
+            total_dist += dist
+
+            traj_mod.append(mod_point)
+            last_point, last_edge = cur_point, cur_edge
+
+        plt.text(data.px, data.py, '{0}'.format(cnt))
+        plt.text(mod_point[0], mod_point[1], '{0}'.format(cnt), color=state)
+
         cnt += 1
+        last_time = data.stime
+        # print cnt, data.px, data.py, mod_point[0], mod_point[1]
+    fp.close()
+    return traj_mod, total_dist
+
+
+def DYN_MATCH(traj_order):
+    """
+    T.B.M.
+    using point match with dynamic programming, 
+    :param traj_order: list of Taxi_Data 
+    :return: 
+    """
+    first_point = True
+    last_point, last_edge = None, None
+    last_state = 0      # 判断双向道路当前是正向或者反向
+    cnt = 0
+
+    traj_mod = []       # 存放修正偏移后的data
+
+    for data in traj_order:
+        if first_point:
+            candidate_edges = get_candidate_first(data, cnt)
+            # Taxi_Data .px .py .stime .speed
+            first_point = False
+            mod_point, last_edge, score = get_mod_point(data, candidate_edges, last_point, cnt)
+            state = 'c'
+            data.set_edge([last_edge, score])
+            traj_mod.append(data)
+            last_point = mod_point
+        else:
+            # 首先判断两个点是否离得足够远
+            T = 10000 / 3600 * 10
+            cur_point = [data.px, data.py]
+            interval = calc_dist(cur_point, last_point)
+            # print cnt, interval
+            if interval < T:
+                continue
+            # 读取上一个匹配点的信息
+            last_data = traj_mod[cnt - 1]
+            last_point = [last_data.px, last_point.py]
+
+            min_score, sel_edge, sel_score = 1e10, None, 0
+            for last_edge, last_score in last_data.edge_info:
+                candidate_edges = get_candidate_later(cur_point, last_point, last_edge, last_state, cnt)
+
+                if len(candidate_edges) == 0:
+                    # no match, restart
+                    candidate_edges = get_candidate_first(data, cnt)
+                    mod_point, cur_edge, score = get_mod_point(data, candidate_edges, None, cnt)
+                    state = 'c'
+                    cur_score = score + 1e5
+                else:
+                    # if cnt == 147:
+                    #     draw_edge_list(candidate_edges)
+                    mod_point, cur_edge, score = get_mod_point(data, candidate_edges, last_point, cnt)
+                    cur_score = score + last_score
+                    state = 'r'
+                if cur_score < min_score:
+                    min_score, sel_edge, sel_score = cur_score, cur_edge, score
+
+            # if state == 'r':
+            #     trace = get_trace(last_edge, cur_edge, last_point, mod_point)
+            #     draw_seg(trace, 'b')
+
+            offset_dist = calc_dist(mod_point, cur_point)
+            if offset_dist > 50:
+                # 判断是否出现太远的情况
+                candidate_edges = get_candidate_first(data, cnt)
+                # draw_edge_list(candidate_edges)
+                mod_point, cur_edge = get_mod_point(data, candidate_edges, None, cnt)
+                state = 'm'
+
+            traj_mod.append(data)
+            last_point, last_edge = cur_point, cur_edge
+
+        plt.text(data.px, data.py, '{0}'.format(cnt))
+        plt.text(mod_point[0], mod_point[1], '{0}'.format(cnt), color=state)
+
+        cnt += 1
+        print cnt, data.px, data.py
+
     return traj_mod
 
 
-def draw():
-    read_xml('hz.xml')
+def draw_trace(traj):
+    x, y = [], []
+    for data in traj:
+        x.append(data.px)
+        y.append(data.py)
+    minx, maxx, miny, maxy = min(x), max(x), min(y), max(y)
+    plt.xlim(minx, maxx)
+    plt.ylim(miny, maxy)
+    plt.plot(x, y, 'k--', marker='+')
+
+
+def matching_draw(trace):
+    # read_xml('hz.xml')
+    fig = plt.figure(figsize=(16, 8))
+    ax = fig.add_subplot(111)
     draw_map()
-    # kdt, X = make_kdtree(node)
+    draw_trace(trace)
     #
-    # traj_order = load_trace('traj1.txt')
-    # x, y = zip(*traj_order)
-    # minx, maxx, miny, maxy = min(x), max(x), min(y), max(y)
-    # plt.xlim(minx, maxx)
-    # plt.ylim(miny, maxy)
-    # plt.plot(x, y, 'k--', marker='+')
-    # for i in range(len(x)):
-    #     plt.text(x[i], y[i], "{0}".format(i))
-    # traj_mod = get_mod_points1(kdt, X, traj_order, node, edge)
-    # draw_points(traj_mod)
+    traj_mod, dist = POINT_MATCH(trace)
+    draw_points(traj_mod)
+    plt.show()
+    return dist
 
 
-fig = plt.figure(figsize=(16, 8))
-ax = fig.add_subplot(111)
-draw()
-plt.show()
+def matching(trace):
+    # read_xml('hz.xml')
+    #
+    traj_mod, dist = POINT_MATCH(trace)
+    return dist

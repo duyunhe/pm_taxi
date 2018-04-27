@@ -1,9 +1,7 @@
-#coding=utf-8
+# coding=utf-8
 from ctypes import *
 import math
 import numpy as np
-import json
-import urllib2
 
 dll = WinDLL("CoordTransDLL.dll")
 
@@ -47,6 +45,12 @@ def xy2bl(x, y):
 
 
 def calc_dist(pt0, pt1):
+    """
+    计算两点距离
+    :param pt0: [x0, y0]
+    :param pt1: [x1, y1]
+    :return: 
+    """
     v0 = np.array(pt0)
     v1 = np.array(pt1)
     dist = np.linalg.norm(v0 - v1)
@@ -64,13 +68,20 @@ def calc_included_angle(s0p0, s0p1, s1p0, s1p1):
     """
     v0 = np.array([s0p1[0] - s0p0[0], s0p1[1] - s0p0[1]])
     v1 = np.array([s1p1[0] - s1p0[0], s1p1[1] - s1p0[1]])
-    return np.dot(v0, v1) / (np.sqrt(np.dot(v0, v0)) * np.sqrt(np.dot(v1, v1)))
+    dt = np.sqrt(np.dot(v0, v0)) * np.sqrt(np.dot(v1, v1))
+    if dt == 0:
+        return 0
+    return np.dot(v0, v1) / dt
 
 
 def is_near_segment(pt0, pt1, pt2, pt3):
     v0 = np.array([pt1[0] - pt0[0], pt1[1] - pt0[1]])
     v1 = np.array([pt3[0] - pt2[0], pt3[1] - pt2[1]])
-    return np.dot(v0, v1) / (np.sqrt(np.dot(v0, v0)) * np.sqrt(np.dot(v1, v1))) > math.cos(np.pi / 1.5)
+    dt = np.sqrt(np.dot(v0, v0)) * np.sqrt(np.dot(v1, v1))
+    if dt == 0:
+        return False
+    ret = np.dot(v0, v1) / dt > math.cos(np.pi / 1.5)
+    return ret
 
 
 def get_eps(x0, y0, x1, y1):
@@ -97,32 +108,47 @@ def get_diff(e0, e1):
     return math.fabs(de)
 
 
-def point_project(x, y, x0, y0, x1, y1):
-    '''
-    :param x: point
-    :param y: 
-    :param x0: segment point0
-    :param y0: 
-    :param x1: segment point1
-    :param y1: 
-    :return: project point
-    '''
+def point_project_edge(point, edge):
+    n0, n1 = edge.node0, edge.node1
+    sp0, sp1 = n0.point, n1.point
+    return point_project(point, sp0, sp1)
+
+
+def point_project(point, segment_point0, segment_point1):
+    """
+    :param point: point to be matched
+    :param segment_point0: segment
+    :param segment_point1: 
+    :return: projected point, state
+            state 为1 在s0s1的延长线上  
+            state 为-1 在s1s0的延长线上
+    """
+    x, y = point[0:2]
+    x0, y0 = segment_point0[0:2]
+    x1, y1 = segment_point1[0:2]
     ap, ab = np.array([x - x0, y - y0]), np.array([x1 - x0, y1 - y0])
     ac = np.dot(ap, ab) / (np.dot(ab, ab)) * ab
     dx, dy = ac[0] + x0, ac[1] + y0
-    return dx, dy, ac
+    state = 0
+    if np.dot(ap, ab) < 0:
+        state = -1
+    bp, ba = np.array([x - x1, y - y1]), np.array([x0 - x1, y0 - y1])
+    if np.dot(bp, ba) < 0:
+        state = 1
+    return [dx, dy], ac, state
 
 
-def point2segment(x, y, x0, y0, x1, y1):
-    '''
-    :param x: point
-    :param y: 
-    :param x0: segment point0
-    :param y0: 
-    :param x1: segment point1
-    :param y1: 
+def point2segment(point, segment_point0, segment_point1):
+    """
+
+    :param point: point to be matched
+    :param segment_point0: segment
+    :param segment_point1: 
     :return: dist from point to segment
-    '''
+    """
+    x, y = point[0:2]
+    x0, y0 = segment_point0[0:2]
+    x1, y1 = segment_point1[0:2]
     cr = (x1 - x0) * (x - x0) + (y1 - y0) * (y - y0)
     if cr <= 0:
         return math.sqrt((x - x0) * (x - x0) + (y - y0) * (y - y0))
@@ -142,13 +168,3 @@ def draw_raw(traj, ax):
         ylist.append(point.py)
     ax.plot(xlist, ylist, marker='o', linestyle='--', color='k', lw=1)
 
-
-def geo2addr(lng, lat):
-    ulr = "http://restapi.amap.com/v3/geocode/regeo?location={0},{1}" \
-          "&key=0a54a59bdc431189d9405b3f2937921a" \
-          "&radius=300&extensions=all".format(lng, lat)
-    temp = urllib2.urlopen(ulr)
-    temp = json.loads(temp.read())
-    geocode = temp['regeocode']
-    list0 = geocode['formatted_address']
-    return list0

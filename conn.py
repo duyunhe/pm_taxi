@@ -14,6 +14,7 @@ from multiprocessing import Process, Pool
 import time
 import os
 import random
+import map_matching
 
 
 def get_distance(latA, lonA, latB, lonB):
@@ -97,6 +98,21 @@ def get_vehicle(conn):
     return veh_list
 
 
+def get_vehicle_spe(conn, mark):
+    sql = "select rownum, t.* from TB_VEHICLE t where zd_median < -600 and " \
+          "zd_mean < -600 and to_number(match_point) >= 8 " \
+          "and map_med is NULL"
+    cursor = conn.cursor()
+    cursor.execute(sql)
+    veh_list = []
+    for item in cursor.fetchall():
+        row = int(item[0])
+        veh = item[1]
+        if row % 10 == mark:
+            veh_list.append(veh)
+    return veh_list
+
+
 def get_vehicle_by_mark(conn, mark):
     sql = "select vehicle_num from tb_vehicle where mark = '{0}' and rownum <= 10000".format(mark)
     cursor = conn.cursor()
@@ -153,7 +169,6 @@ def get_gps_data(conn, begin_time, veh):
     trace.sort(cmp1)
 
     new_trace = []
-    del_list = []
     for data in trace:
         cur_point = data
         if last_point is not None:
@@ -162,6 +177,8 @@ def get_gps_data(conn, begin_time, veh):
             if data.speed > 140 or del_time < 5:            # 速度阈值 时间间隔阈值
                 continue
             elif dist > data.speed * 3.6 * del_time * 2:    # 距离阈值
+                continue
+            elif data.speed == last_point.speed and data.speed > 0 and dist == 0:      # 非精确
                 continue
             else:
                 data.dist = dist
@@ -302,6 +319,15 @@ def get_max_match1(trace, trace_list, jjq, offset):
     return match, sel_off
 
 
+def get_trace_dist_with_matching(trace, bi, ei, ti):
+    if ti >= 6:
+        dist = map_matching.matching(trace[bi: ei + 1])
+        return dist
+    else:
+        dist = map_matching.matching(trace[bi: ei + 1])
+        return dist
+
+
 def get_trace_dist(trace, bi, ei, ti):
     """
     :param trace: 轨迹(list)
@@ -321,11 +347,11 @@ def get_trace_dist(trace, bi, ei, ti):
             cnt_spd += 1
         last_speed = data.speed
         final_dist += data.dist
-    if ti == 3:
+    if ti == 300:
         for i in range(bi - 1, ei + 2):
             data = trace[i]
             print data.state, data.car_state, data.speed, data.stime, data.dist
-    if float(cnt_imp) / trace_len > 0.15:
+    if float(cnt_imp) / trace_len > 0.3:
         return -1
     if float(cnt_spd) / trace_len > 0.3:
         return -2
@@ -352,11 +378,12 @@ def get_trace_dist_from_time(trace, bt, et, ti):
             break
         idx += 1
     if bi is None or ei is None:
-        return -3
+        return -3, 0
     total_cnt = (et - bt).total_seconds() / 20
     if total_cnt <= 0:
-        return -5
+        return -5, 0
     trace_len = ei - bi + 1
+    dist1 = get_trace_dist_with_matching(trace, bi, ei, ti)
     for i in range(bi, ei + 1):
         data = trace[i]
         if data.car_state == 1:
@@ -365,17 +392,14 @@ def get_trace_dist_from_time(trace, bt, et, ti):
             cnt_spd += 1
         last_speed = data.speed
         final_dist += data.dist
-    if ti == 9:
-        for i in range(bi, ei + 1):
-            data = trace[i]
-            print data.state, data.car_state, data.speed, data.stime, data.dist
+
     if float(trace_len) / total_cnt < 0.3:
-        return -4
+        return -4, dist1
     if float(cnt_imp) / trace_len > 0.15:
-        return -1
+        return -1, 0
     if float(cnt_spd) / trace_len > 0.3:
-        return -2
-    return final_dist
+        return -2, 0
+    return final_dist, dist1
 
 
 def match_jjq_gps(trace, trace_list, jjq, ys):
@@ -393,16 +417,23 @@ def match_jjq_gps(trace, trace_list, jjq, ys):
     diff_median, diff_mean = None, None
     match_list = sorted(match.items(), key=lambda d: d[0])
     jjq_vis = [0] * len(jjq)
+    matching_list = []      # matching 后得到的difference
+
     for i, j in match_list:
         jjq_dep, jjq_dest, jc, zd, zx, _, lc = jjq[i][1:]
         adj_dep = jjq_dest + timedelta(minutes=offset_time)
         bi, ei, sp = trace_list[j]
         gps_dest = trace[ei].stime
         dist = get_trace_dist(trace, bi, ei, i)
+        dist1 = get_trace_dist_with_matching(trace, bi, ei, i)
+
         dist_diff = dist - lc * 100
+        matching_diff = dist1 - lc * 100
+        matching_list.append(matching_diff)
+        print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'adj: ' + str(adj_dep), jc, 'zx: ' + str(zx), \
+            'zd: ' + str(zd), gps_dest, '{0:.2f}'.format(sp), 'lc: ' + str(lc), 'dist: ' + str(dist), \
+            'dist1: ' + str(dist1)
         if dist >= 0:
-            print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'adj: ' + str(adj_dep), jc, 'zx: ' + str(zx), \
-                'zd: ' + str(zd), gps_dest, '{0:.2f}'.format(sp), 'lc: ' + str(lc), 'dist: ' + str(dist)
             diff_list.append(dist_diff)
         jjq_vis[i] = 1
     for i in range(len(jjq)):
@@ -410,9 +441,10 @@ def match_jjq_gps(trace, trace_list, jjq, ys):
             jjq_dep, jjq_dest = jjq[i][1:3]
             lc = jjq[i][7]
             gps_dep, gps_dest = jjq_dep + timedelta(seconds=ys), jjq_dest + timedelta(seconds=ys)
-            dist = get_trace_dist_from_time(trace, gps_dep, gps_dest, i)
+            dist, dist1 = get_trace_dist_from_time(trace, gps_dep, gps_dest, i)
             dist_diff = dist - lc * 100
-            print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'lc: ' + str(lc), 'dist: ' + str(dist)
+            # print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'lc: ' + str(lc), 'dist: ' + str(dist), \
+            #     'dist1: ' + str(dist1)
             if dist >= 0:
                 diff_list.append(dist_diff)
 
@@ -420,8 +452,10 @@ def match_jjq_gps(trace, trace_list, jjq, ys):
         vec = np.array(diff_list)
         diff_median = np.median(vec)
         diff_mean = np.mean(vec)
+    vec = np.array(matching_list)
+    matching_med = np.median(vec)
 
-    return offset_time, match_list, diff_median, diff_mean
+    return offset_time, match_list, diff_median, diff_mean, matching_med
 
 
 def process_jjq(jjq_list):
@@ -485,17 +519,18 @@ def main():
 
 def zx_with_zd_time(mark, begin_time):
     bt = time.clock()
+    map_matching.read_xml('hz.xml')
     conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
 
     veh_list = get_vehicle_by_mark(conn, mark)
-    veh_list = ['ATC228']
+    veh_list = ['AT6880']
     cursor = conn.cursor()
     tup_list = []
     sql = "update tb_vehicle set el = :1, gps_no_data = :2, dif2 = :3, match_point = :4, jjq_point" \
-          "=:5, zd_median = :6, zd_mean = :7 where vehicle_num = :8"
+          "=:5, zd_median = :6, zd_mean = :7, map_med = :8 where vehicle_num = :9"
     idx = 0
     for veh in veh_list:
-        # print veh
+        print veh
         idx += 1
         if idx % 10 == 0:
             print mark, idx
@@ -516,14 +551,15 @@ def zx_with_zd_time(mark, begin_time):
             el = 1
         match = []
         if len(trace) != 0:
-            dif, match, dist_med, dist_mean = match_jjq_gps(trace, t_list, jjq, ys_median - 126)
+            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126)
             if dif is not None:
                 dif = dif * 60
-        tup = (el, gps_no_data, dif, len(match), len(jjq), dist_med, dist_mean, veh)
+        tup = (el, gps_no_data, dif, len(match), len(jjq), dist_med, dist_mean, map_med, veh)
         tup_list.append(tup)
+        cursor.executemany(sql, tup_list)
+        conn.commit()
+        tup_list = []
 
-    cursor.executemany(sql, tup_list)
-    conn.commit()
     conn.close()
 
     et = time.clock()
