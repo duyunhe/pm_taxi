@@ -1,7 +1,12 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2018/4/16 16:40
+# @Author  :
+# @简介    : 轨迹处理
+# @File    : traj.py
 import time
 import datetime
 import re
-from geo import bl2xy
+from geo import bl2xy, calc_dist, calc_included_segment
 from datetime import datetime
 
 
@@ -61,6 +66,39 @@ def load_trace(filename):
             break
         cnt += 1
     return data
+
+
+def pre_traj(trace):
+    """
+    预处理轨迹，去除异常点，去除无需匹配的停止点
+    :param trace: 
+    :return: mod_trace(list)
+    """
+    mod_trace, temp = [], []
+    T = 10
+    last_data = None
+    for data in trace:
+        if last_data is None:
+            temp.append(data)
+        else:
+            dist = calc_dist([data.px, data.py], [last_data.px, last_data.py])
+            if dist < T:
+                continue
+            else:
+                temp.append(data)
+        last_data = data
+
+    i, l = 0, len(temp)
+    for data in temp:
+        if i == 0 or i == l - 1:
+            mod_trace.append(data)
+        else:
+            angle = calc_included_segment([data.px, data.py], [temp[i - 1].px, temp[i - 1].py],
+                                          [temp[i + 1].px, temp[i + 1].py])
+            data.set_angle(angle)
+            mod_trace.append(data)
+        i += 1
+    return mod_trace
 
 
 def load_traj(filename):

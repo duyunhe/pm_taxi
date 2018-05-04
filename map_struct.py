@@ -42,3 +42,15 @@ class MapEdge(object):
         self.edge_index = edge_index
         self.edge_length = edge_length
         self.way_id = way_id
+
+
+class MatchResult(object):
+    """
+    匹配结果
+    edge_list: matched edges
+    mod_list: modified points
+    last_index: each matched edge index corresponding to last edge
+    """
+    def __init__(self, idx, point, edge_list, mod_list, last_index):
+        self.idx, self.point, self.edge_list, self.mod_list,\
+        self.last_index = idx, point, edge_list, mod_list, last_index

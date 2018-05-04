@@ -14,6 +14,7 @@ from multiprocessing import Process, Pool
 import time
 import os
 import random
+from traj import pre_traj
 import map_matching
 
 
@@ -43,12 +44,16 @@ def get_distance(latA, lonA, latB, lonB):
 
 
 class TaxiData:
-    def __init__(self, px, py, stime, state, speed, car_state):
+    def __init__(self, px, py, stime, state, speed, car_state, direction):
         self.px, self.py, self.stime, self.state, self.speed = px, py, stime, state, speed
-        self.stop_index, self.dist, self.car_state = 0, 0, car_state
+        self.stop_index, self.dist, self.car_state, self.direction = 0, 0, car_state, direction
+        self.angle = 0
 
     def set_index(self, index):
         self.stop_index = index
+
+    def set_angle(self, angle):
+        self.angle = angle
 
 
 def cmp1(data1, data2):
@@ -99,9 +104,8 @@ def get_vehicle(conn):
 
 
 def get_vehicle_spe(conn, mark):
-    sql = "select rownum, t.* from TB_VEHICLE t where zd_median < -600 and " \
-          "zd_mean < -600 and to_number(match_point) >= 8 " \
-          "and map_med is NULL"
+    sql = "select rownum, t.* from TB_VEHICLE t where zd_median < -500 and zd_mean < -500 and to_number(match_point) >= 7" \
+          " and gps_median <= 30 and carstate_per > 60 and map_med is NULL"
     cursor = conn.cursor()
     cursor.execute(sql)
     veh_list = []
@@ -146,7 +150,7 @@ def get_gps_data(conn, begin_time, veh):
     str_bt = begin_time.strftime('%Y-%m-%d %H:%M:%S')
     end_time = begin_time + timedelta(days=1)
     str_et = end_time.strftime('%Y-%m-%d %H:%M:%S')
-    sql = "select px, py, speed_time, state, speed, carstate from " \
+    sql = "select px, py, speed_time, state, speed, carstate, direction from " \
           "TB_GPS_1709 t where speed_time >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') " \
           "and speed_time < to_date('{2}', 'yyyy-MM-dd hh24:mi:ss')" \
           " and vehicle_num = '{0}'".format(veh, str_bt, str_et)
@@ -163,7 +167,8 @@ def get_gps_data(conn, begin_time, veh):
             stime = item[2]
             speed = float(item[4])
             carstate = int(item[5])
-            taxi_data = TaxiData(px, py, stime, state, speed, carstate)
+            dir = float(item[6])
+            taxi_data = TaxiData(px, py, stime, state, speed, carstate, dir)
             trace.append(taxi_data)
     # print len(trace)
     trace.sort(cmp1)
@@ -178,7 +183,8 @@ def get_gps_data(conn, begin_time, veh):
                 continue
             elif dist > data.speed * 3.6 * del_time * 2:    # 距离阈值
                 continue
-            elif data.speed == last_point.speed and data.speed > 0 and dist == 0:      # 非精确
+            elif data.speed == last_point.speed and data.speed > 0 and data.direction == last_point.direction:
+                # 非精确
                 continue
             else:
                 data.dist = dist
@@ -320,8 +326,8 @@ def get_max_match1(trace, trace_list, jjq, offset):
 
 
 def get_trace_dist_with_matching(trace, bi, ei, ti):
-    if ti >= 6:
-        dist = map_matching.matching(trace[bi: ei + 1])
+    if ti >= 0:
+        dist = map_matching.matching_draw(trace[bi: ei + 1])
         return dist
     else:
         dist = map_matching.matching(trace[bi: ei + 1])
@@ -402,7 +408,7 @@ def get_trace_dist_from_time(trace, bt, et, ti):
     return final_dist, dist1
 
 
-def match_jjq_gps(trace, trace_list, jjq, ys):
+def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     """
     匹配计价器与GPS数据
     :param trace: gps轨迹 (list)
@@ -420,6 +426,8 @@ def match_jjq_gps(trace, trace_list, jjq, ys):
     matching_list = []      # matching 后得到的difference
 
     for i, j in match_list:
+        if i != pos:
+            continue
         jjq_dep, jjq_dest, jc, zd, zx, _, lc = jjq[i][1:]
         adj_dep = jjq_dest + timedelta(minutes=offset_time)
         bi, ei, sp = trace_list[j]
@@ -437,14 +445,19 @@ def match_jjq_gps(trace, trace_list, jjq, ys):
             diff_list.append(dist_diff)
         jjq_vis[i] = 1
     for i in range(len(jjq)):
+        if i != pos:
+            continue
         if jjq_vis[i] == 0:
             jjq_dep, jjq_dest = jjq[i][1:3]
             lc = jjq[i][7]
             gps_dep, gps_dest = jjq_dep + timedelta(seconds=ys), jjq_dest + timedelta(seconds=ys)
             dist, dist1 = get_trace_dist_from_time(trace, gps_dep, gps_dest, i)
             dist_diff = dist - lc * 100
-            # print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'lc: ' + str(lc), 'dist: ' + str(dist), \
-            #     'dist1: ' + str(dist1)
+            matching_diff = dist1 - lc * 100
+            # if dist1 >= 0:
+            #     matching_list.append(matching_diff)
+            print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'lc: ' + str(lc), 'dist: ' + str(dist), \
+                'dist1: ' + str(dist1)
             if dist >= 0:
                 diff_list.append(dist_diff)
 
@@ -518,16 +531,17 @@ def main():
 
 
 def zx_with_zd_time(mark, begin_time):
+    print mark
     bt = time.clock()
     map_matching.read_xml('hz.xml')
     conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
 
-    veh_list = get_vehicle_by_mark(conn, mark)
-    veh_list = ['AT6880']
+    veh_list = get_vehicle_spe(conn, mark)
+    veh_list = ['ATC160']
     cursor = conn.cursor()
     tup_list = []
     sql = "update tb_vehicle set el = :1, gps_no_data = :2, dif2 = :3, match_point = :4, jjq_point" \
-          "=:5, zd_median = :6, zd_mean = :7, map_med = :8 where vehicle_num = :9"
+          "=:5, map_med = :6 where vehicle_num = :7"
     idx = 0
     for veh in veh_list:
         print veh
@@ -539,6 +553,7 @@ def zx_with_zd_time(mark, begin_time):
         trace = get_gps_data(conn, begin_time, veh)
         # print_data(trace)
         pre_trace(trace)
+        # trace = pre_traj(trace)
         t_list = split_trace(veh, trace)
         # print_jjq(jjq)
         # print_trace(trace, t_list)
@@ -550,18 +565,18 @@ def zx_with_zd_time(mark, begin_time):
         elif jjq_len > 0 and len(t_list) == 0:
             el = 1
         match = []
+        map_med = None
         if len(trace) != 0:
-            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126)
+            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, 1)
             if dif is not None:
                 dif = dif * 60
-        tup = (el, gps_no_data, dif, len(match), len(jjq), dist_med, dist_mean, map_med, veh)
+        tup = (el, gps_no_data, dif, len(match), len(jjq), map_med, veh)
         tup_list.append(tup)
         cursor.executemany(sql, tup_list)
-        conn.commit()
+        # conn.commit()
         tup_list = []
 
     conn.close()
-
     et = time.clock()
     # bt = datetime.strptime('2017-09-01 14:32:00', '%Y-%m-%d %H:%M:%S')
     # et = datetime.strptime('2017-09-01 14:41:00', '%Y-%m-%d %H:%M:%S')

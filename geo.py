@@ -57,6 +57,10 @@ def calc_dist(pt0, pt1):
     return dist
 
 
+def calc_included_segment(pt, p0, p1):
+    return calc_included_angle(pt, p0, pt, p1)
+
+
 def calc_included_angle(s0p0, s0p1, s1p0, s1p1):
     """
     计算夹角
