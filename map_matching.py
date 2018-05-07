@@ -92,6 +92,15 @@ def draw_points(points):
     plt.plot(x, y, 'ro', markersize=4)
 
 
+def draw_mod_results(results):
+    x, y = [], []
+    for r in results:
+        for mp in r.mod_list:
+            x.append(mp[0])
+            y.append(mp[1])
+    plt.plot(x, y, 'ro', markersize=4)
+
+
 def draw_point(point, c):
     """
     :param point: [x, y]
@@ -282,7 +291,7 @@ def get_candidate_later(cur_data, last_data, last_point, last_edge, last_state, 
     cur_point = [cur_data.px, cur_data.py]
 
     cart_dist = calc_dist(cur_point, last_point)
-    eva_speed = max(cur_data.speed, last_data.speed) / 3.6
+    eva_speed = max(cur_data.speed, last_data.speed) / 1.8
     T = min(3.0 * cart_dist, eva_speed * itv_time)  # dist_thread
 
     if last_edge.oneway is False or is_near_segment(last_point, cur_point,
@@ -370,12 +379,60 @@ def _get_mod_point_later(candidate, point, last_point, cnt):
     return project_point, sel_edge, min_score
 
 
+def get_mod_points(taxi_data, candidate, last_point, cnt=-1):
+    """
+    get all fit points
+    :param taxi_data: 
+    :param candidate: 
+    :param last_point: 
+    :param cnt: 
+    :return: 
+    """
+    point = [taxi_data.px, taxi_data.py]
+    edge_list, mod_list = [], []
+
+    for edge in candidate:
+        p0, p1 = edge.node0.point, edge.node1.point
+        # 考虑方向与距离
+        dist = point2segment(point, p0, p1)
+        angle = calc_included_angle(last_point, point, p0, p1)
+        if math.fabs(angle) > math.cos(math.pi * 2 / 3) and dist < 50:
+            edge_list.append(edge)
+            # if cnt == 147:
+            #     print edge.edge_index, dist, score, angle
+
+    state_list = []
+    in_road = False
+    for edge in edge_list:
+        project_point, _, state = point_project(point, edge.node0.point, edge.node1.point)
+        if state == 1:
+            # 点落在线段末端外
+            project_point = edge.node1.point
+        elif state == -1:
+            project_point = edge.node0.point
+        else:
+            in_road = True
+        mod_list.append(project_point)
+        state_list.append(state)
+    e_list, m_list = [], []
+
+    for i in range(len(state_list)):
+        state = state_list[i]
+        if in_road and state != 0:
+            continue
+        e_list.append(edge_list[i])
+        m_list.append(mod_list[i])
+    match_list = zip(e_list, m_list)
+    return match_list
+
+
 def get_mod_point(taxi_data, candidate, last_point, cnt=-1):
     """
     get best fit point matched with candidate edges
     :param taxi_data: Taxi_Data
     :param candidate: list[edge0, edge1, edge...]
-    :param last_point: last matched point 
+    :param last_point: last matched point
+    :param cnt: for debug
     :return: matched point, matched edge, minimum distance from point to matched edge
     """
     point = [taxi_data.px, taxi_data.py]
@@ -586,34 +643,39 @@ def DYN_MATCH(traj_order):
             T = 10
             cur_point = [data.px, data.py]
             interval = calc_dist(cur_point, last_point)
-            # print cnt, interval
+            print cnt, interval
             if interval < T:
                 last_time = data.stime
                 continue
             cur_point = [data.px, data.py]
             interval_time = (data.stime - last_time).total_seconds()
-            # print cnt, interval
+
             last_mr = traj_mod[cnt - 1]
             has_result = False
             mtc_edge, mtc_mod, mtc_index = [], [], []
             # 对于上一次匹配的每一条记录进行运算
+            edge_set = set()
             for i in range(len(last_mr.edge_list)):
                 last_edge = last_mr.edge_list[i]
-                candidate_edges = get_candidate_later(data, last_data, last_point, last_edge, last_state, interval_time, cnt)
+                candidate_edges = get_candidate_later(data, last_data, last_point, last_edge,
+                                                      last_state, interval_time, cnt)
                 if len(candidate_edges) > 0:
                     # 正常情形
                     has_result = True
-                    mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, last_point, cnt)
-                    offset_dist = calc_dist(mod_point, cur_point)
-                    if offset_dist > 60:
-                        # 判断是否出现太远的情况
-                        continue
-                    mtc_edge.append(cur_edge)
-                    mtc_mod.append(mod_point)
-                    mtc_index.append(i)
+                    # mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, last_point, cnt)
+                    match_list = get_mod_points(data, candidate_edges, last_point, cnt)
+                    for edge, mod_point in match_list:
+                        if edge.edge_index not in edge_set:
+                            mtc_edge.append(edge)
+                            mtc_mod.append(mod_point)
+                            mtc_index.append(i)
+                            edge_set.add(edge.edge_index)
+                # if cnt == 20:
+                #     draw_edge_list(candidate_edges)
 
             mr = MatchResult(cnt, cur_point, mtc_edge, mtc_mod, mtc_index)
             traj_mod.append(mr)
+            print len(mr.edge_list)
             last_point = cur_point
 
         plt.text(data.px, data.py, '{0}'.format(cnt))
@@ -649,7 +711,7 @@ def matching_draw(trace):
     bt = clock()
     traj_mod, dist = DYN_MATCH(trace)
     print clock() - bt
-    # draw_points(traj_mod)
+    draw_mod_results(traj_mod)
     plt.show()
     return dist
 

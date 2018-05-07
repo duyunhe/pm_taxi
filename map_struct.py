@@ -52,5 +52,9 @@ class MatchResult(object):
     last_index: each matched edge index corresponding to last edge
     """
     def __init__(self, idx, point, edge_list, mod_list, last_index):
-        self.idx, self.point, self.edge_list, self.mod_list,\
-        self.last_index = idx, point, edge_list, mod_list, last_index
+        self.idx, self.point, self.edge_list, self.mod_list, self.last_index =\
+            idx, point, edge_list, mod_list, last_index
+        self.score = 0
+
+    def set_score(self, score):
+        self.score = score
