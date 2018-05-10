@@ -61,7 +61,7 @@ def draw_seg(seg, c):
 
 def draw_edge_set(edge, edge_set, node):
     for i in edge_set:
-        draw_edge(edge[i], 'b', node)
+        draw_edge(edge[i], 'b')
 
 
 def draw_edge(e, c):
@@ -94,11 +94,21 @@ def draw_points(points):
 
 def draw_mod_results(results):
     x, y = [], []
-    for r in results:
-        for mp, _, _, _ in r.match_list:
-            x.append(mp[0])
-            y.append(mp[1])
-    plt.plot(x, y, 'ro', markersize=4)
+    xsel, ysel = [], []
+    for j, r in enumerate(results):
+        sel = r.sel
+        for i, match_point in enumerate(r.match_point_list):
+            mp, edge_index, score = match_point.mod_point, match_point.edge_index, match_point.score
+            # if j == 31 or j == 30:
+            #     plt.text(mp[0], mp[1], "{0}".format(edge_index))
+            if i == sel:
+                xsel.append(mp[0])
+                ysel.append(mp[1])
+            else:
+                x.append(mp[0])
+                y.append(mp[1])
+    plt.plot(xsel, ysel, 'ro', markersize=4)
+    plt.plot(x, y, 'co', markersize=3)
 
 
 def draw_point(point, c):
@@ -168,7 +178,13 @@ def store_edge(tree):
             last_node = node
 
 
-def dp(mr_list):
+def calc_best_path(mr_list):
+    """
+    根据得分计算最优路径
+    以最后一个点的得分作为判定，回溯至起始点
+    :param mr_list: 
+    :return: 
+    """
     n = len(mr_list)
     score = []
     for i in range(n):
@@ -176,20 +192,24 @@ def dp(mr_list):
 
     for i, mr in enumerate(mr_list):
         if i == 0:
-            for m in mr.match_list:
-                mod_point, edge, last_index, dist = m[0:4]
-                score[i][edge.edge_index] = [dist, -1, None]
+            for mp in mr.match_point_list:
+                ei, s = mp.edge_index, mp.score
+                score[i][ei] = [s, -1, None]
         else:
-            for m in mr.match_list:
-                mod_point, edge, last_i, dist = m[0:4]
-                last_edge_index = mr_list[i - 1].match_list[last_i][1].edge_index
-                new_dist = dist + score[i - 1][last_edge_index][0]
-                if edge.edge_index not in score[i]:
-                    score[i][edge.edge_index] = [new_dist, last_edge_index, mod_point]
-                else:
-                    if new_dist < score[i][edge.edge_index]:
-                        score[i][edge.edge_index] = [new_dist, last_edge_index, mod_point]
+            for mp in mr.match_point_list:
+                mod_point, edge, s, dist = mp.mod_point, map_edge_list[mp.edge_index], mp.score, mp.dist
+                for last_edge_index in mp.last_index_list:
+                    try:
+                        new_score = s + score[i - 1][last_edge_index][0]
+                        if edge.edge_index not in score[i]:
+                            score[i][edge.edge_index] = [new_score, last_edge_index, mod_point]
+                        else:
+                            if new_score < score[i][edge.edge_index][0]:
+                                score[i][edge.edge_index] = [new_score, last_edge_index, mod_point]
+                    except KeyError:
+                        print i
 
+    # 绘制
     last_edge_index, edge_index = -1, -1
     for i in range(n - 1, 0, -1):
         if i == n - 1:
@@ -201,14 +221,26 @@ def dp(mr_list):
                 if s < min_score:
                     last_edge_index, min_score, edge_index, mod_point = last_ei, s, ei, mp
             cur_edge, last_edge = map_edge_list[edge_index], map_edge_list[last_edge_index]
+            # 标点
+            mp_list = mr_list[n - 1].match_point_list
+            for j, mp in enumerate(mp_list):
+                if edge_index == mp.edge_index:
+                    mr_list[n - 1].set_sel(j)
+                    break
         else:
             last_edge_index = score[i][edge_index][1]
             mod_point = score[i][edge_index][2]
             cur_edge, last_edge = map_edge_list[edge_index], map_edge_list[last_edge_index]
+            mp_list = mr_list[i].match_point_list
+            for j, mp in enumerate(mp_list):
+                if edge_index == mp.edge_index:
+                    mr_list[i].set_sel(j)
+                    break
         edge_index = last_edge_index
         last_point = mr_list[i - 1].point
         trace = get_trace_dyn(last_edge, cur_edge, last_point, mod_point)
-        draw_seg(trace, 'b')
+        if len(trace) != 0:
+            draw_seg(trace, 'b')
 
 
 def calc_node_dict(node):
@@ -432,19 +464,26 @@ def get_mod_points(taxi_data, candidate, last_point, cnt=-1):
     :return: 
     """
     point = [taxi_data.px, taxi_data.py]
-    edge_list, mod_list, dist_list = [], [], []
+    edge_list, mod_list, dist_list, score_list = [], [], [], []
 
     for edge in candidate:
         p0, p1 = edge.node0.point, edge.node1.point
         # 考虑方向与距离
         dist = point2segment(point, p0, p1)
         angle = calc_included_angle(last_point, point, p0, p1)
+        if not edge.oneway and angle < 0:
+            angle = -angle
+        w0, w1 = 1.0, 10.0
+        score = w0 * dist + w1 * (1 - angle)
         if math.fabs(angle) > math.cos(math.pi * 2 / 3) and dist < 50:
             edge_list.append(edge)
             dist_list.append(dist)
+            score_list.append(score)
             # if cnt == 147:
             #     print edge.edge_index, dist, score, angle
 
+    # 当点落在线段中时，去掉那些落在线段外面的点
+    # T.B.D
     state_list = []
     in_road = False
     for edge in edge_list:
@@ -458,15 +497,15 @@ def get_mod_points(taxi_data, candidate, last_point, cnt=-1):
             in_road = True
         mod_list.append(project_point)
         state_list.append(state)
-    e_list, m_list = [], []
 
-    for i in range(len(state_list)):
+    temp = zip(mod_list, edge_list, dist_list, score_list)
+    match_list = []
+    for i, mtc in enumerate(temp):
         state = state_list[i]
         if in_road and state != 0:
             continue
-        e_list.append(edge_list[i])
-        m_list.append(mod_list[i])
-    match_list = zip(e_list, m_list, dist_list)
+        match_list.append(mtc)
+
     return match_list
 
 
@@ -621,6 +660,7 @@ def POINT_MATCH(traj_order):
     :param traj_order: list of Taxi_Data 
     :return: 
     """
+    kdt, X = make_kdtree()
     first_point = True
     last_point, last_edge = None, None
     last_state = 0      # 判断双向道路当前是正向或者反向
@@ -631,7 +671,7 @@ def POINT_MATCH(traj_order):
     for data in traj_order:
         if first_point:
             # 第一个点
-            candidate_edges = get_candidate_first(data, cnt)
+            candidate_edges = get_candidate_first(data, kdt, X)
             # Taxi_Data .px .py .stime .speed
             first_point = False
             mod_point, last_edge, _ = get_mod_point(data, candidate_edges, last_point, cnt)
@@ -657,7 +697,7 @@ def POINT_MATCH(traj_order):
 
             if len(candidate_edges) == 0:
                 # no match, restart
-                candidate_edges = get_candidate_first(data, cnt)
+                candidate_edges = get_candidate_first(data, kdt, X)
                 mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, None, cnt)
                 state = 'c'
             else:
@@ -707,7 +747,7 @@ def DYN_MATCH(traj_order):
     total_dist = 0.0  # 计算路程
     last_time = None
     cnt = 0
-    traj_mod = []     # MatchResult
+    match_results = []     # MatchResult
 
     for data in traj_order:
         if first_point:
@@ -716,9 +756,10 @@ def DYN_MATCH(traj_order):
             # Taxi_Data .px .py .stime .speed
             first_point = False
             mod_point, last_edge, dist = get_mod_point(data, candidate_edges, last_point, cnt)
-            state = 'c'
-            mr = MatchResult(0, [data.px, data.py], [[mod_point, last_edge, 0, dist]])
-            traj_mod.append(mr)
+            mr = MatchResult([data.px, data.py])
+            mr.add_match(last_edge.edge_index, mod_point, [], dist, dist)
+            mr.set_first(True)      # 首次匹配
+            match_results.append(mr)
             last_point = mod_point
         else:
             # 随后的点
@@ -726,41 +767,48 @@ def DYN_MATCH(traj_order):
             T = 10
             cur_point = [data.px, data.py]
             interval = calc_dist(cur_point, last_point)
-            print cnt, interval
+            # print cnt, interval
             if interval < T:
                 last_time = data.stime
                 continue
             cur_point = [data.px, data.py]
             interval_time = (data.stime - last_time).total_seconds()
 
-            last_mr = traj_mod[cnt - 1]
+            last_mr = match_results[cnt - 1]
             has_result = False
-            mtc_edge, mtc_mod, mtc_index, mtc_dist = [], [], [], []
+            ret = {}
             # 对于上一次匹配的每一条记录进行运算
-            edge_set = set()
-            for i in range(len(last_mr.match_list)):
-                last_edge = last_mr.match_list[i][1]
+
+            mr = MatchResult(cur_point)
+            for i, mp in enumerate(last_mr.match_point_list):
+                last_index = mp.edge_index
+                last_edge = map_edge_list[last_index]
                 candidate_edges = get_candidate_later(data, last_data, last_point, last_edge,
                                                       last_state, interval_time, cnt)
                 if len(candidate_edges) > 0:
                     # 正常情形
                     has_result = True
-                    # mod_point, cur_edge, _ = get_mod_point(data, candidate_edges, last_point, cnt)
                     match_list = get_mod_points(data, candidate_edges, last_point, cnt)
-                    for edge, mod_point, dist in match_list:
-                        if edge.edge_index not in edge_set:
-                            mtc_edge.append(edge)
-                            mtc_mod.append(mod_point)
-                            mtc_index.append(i)
-                            mtc_dist.append(dist)
-                            edge_set.add(edge.edge_index)
-                # if cnt == 20:
-                #     draw_edge_list(candidate_edges)
-            mtc = zip(mtc_mod, mtc_edge, mtc_index, mtc_dist)
+                    for mtc in match_list:
+                        mp, edge, dist, score = mtc[0:4]
+                        ei = edge.edge_index
+                        try:
+                            ret[ei][1].append(last_index)
+                        except KeyError:
+                            ret[ei] = [mp, [last_index], dist, score]
+            for ei, v in ret.iteritems():
+                mr.add_match(ei, ret[ei][0], ret[ei][1], ret[ei][2], ret[ei][3])
 
-            mr = MatchResult(cnt, cur_point, mtc)
-            traj_mod.append(mr)
-            print len(mr.match_list)
+            if has_result is False:             # 无匹配结果
+                candidate_edges = get_candidate_first(data, kdt, X)
+                # Taxi_Data .px .py .stime .speed
+                first_point = False
+                mod_point, last_edge, dist = get_mod_point(data, candidate_edges, last_point, cnt)
+                mr.add_match(last_edge.edge_index, mod_point, [], dist, dist)
+
+            mr.set_first(not has_result)
+            match_results.append(mr)
+            # print len(mr.match_list)
             last_point = cur_point
 
         plt.text(data.px, data.py, '{0}'.format(cnt))
@@ -772,7 +820,7 @@ def DYN_MATCH(traj_order):
         last_data = data
         # print cnt, data.px, data.py, mod_point[0], mod_point[1]
 
-    return traj_mod, total_dist
+    return match_results, total_dist
 
 
 def draw_trace(traj):
@@ -796,7 +844,7 @@ def matching_draw(trace):
     bt = clock()
     traj_mod, dist = DYN_MATCH(trace)
     print clock() - bt
-    dp(traj_mod)
+    calc_best_path(traj_mod)
     draw_mod_results(traj_mod)
     plt.show()
     return dist
@@ -804,6 +852,12 @@ def matching_draw(trace):
 
 def matching(trace):
     # read_xml('hz.xml')
-    #
+    fig = plt.figure(figsize=(16, 8))
+    ax = fig.add_subplot(111)
+    draw_map()
+    draw_trace(trace)
+    bt = clock()
     traj_mod, dist = POINT_MATCH(trace)
+    print clock() - bt
+    plt.show()
     return dist

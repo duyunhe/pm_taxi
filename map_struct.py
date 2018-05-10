@@ -47,8 +47,29 @@ class MapEdge(object):
 class MatchResult(object):
     """
     匹配结果
-    match_list: [mod_point, edge, last_index, dist]
+    current point
+    match_list: [MatchList, ...]
     """
-    def __init__(self, idx, point, match_list):
-        self.idx, self.point, self.match_list = idx, point, match_list
+    class MatchPoint(object):
+        """
+        edge_index, match_point, [last_index1, last_index2...], dist, 
+        """
+        def __init__(self, edge_index, mod_point, last_index_list, dist, score):
+            self.edge_index, self.last_index_list = edge_index, last_index_list
+            self.mod_point = mod_point
+            self.dist, self.score = dist, score
 
+    def __init__(self, point):
+        self.point, self.first = point, True
+        self.match_point_list = []
+        self.sel = -1
+
+    def add_match(self, edge_index, mod_point, index_list, dist, score):
+        mp = self.MatchPoint(edge_index, mod_point, index_list, dist, score)
+        self.match_point_list.append(mp)
+
+    def set_sel(self, sel):
+        self.sel = sel
+
+    def set_first(self, first):
+        self.first = first
