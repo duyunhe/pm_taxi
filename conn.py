@@ -567,7 +567,7 @@ def zx_with_zd_time(mark, begin_time):
         match = []
         map_med = None
         if len(trace) != 0:
-            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, 0)
+            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, 4)
             if dif is not None:
                 dif = dif * 60
         tup = (el, gps_no_data, dif, len(match), len(jjq), map_med, veh)

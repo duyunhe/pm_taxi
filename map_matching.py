@@ -99,8 +99,8 @@ def draw_mod_results(results):
         sel = r.sel
         for i, match_point in enumerate(r.match_point_list):
             mp, edge_index, score = match_point.mod_point, match_point.edge_index, match_point.score
-            # if j == 31 or j == 30:
-            #     plt.text(mp[0], mp[1], "{0}".format(edge_index))
+            if j == 0 or j == 1:
+                plt.text(mp[0], mp[1], "{0}".format(edge_index))
             if i == sel:
                 xsel.append(mp[0])
                 ysel.append(mp[1])
@@ -189,18 +189,21 @@ def calc_best_path(mr_list):
     score = []
     for i in range(n):
         score.append({})
+    last_score = 0      # 记录上一个点匹配中最大的得分值
 
     for i, mr in enumerate(mr_list):
-        if i == 0:
+        if mr.first is True:
             for mp in mr.match_point_list:
                 ei, s = mp.edge_index, mp.score
-                score[i][ei] = [s, -1, None]
+                score[i][ei] = [s + last_score, -1, None]
         else:
+            last_score = 1e20
             for mp in mr.match_point_list:
                 mod_point, edge, s, dist = mp.mod_point, map_edge_list[mp.edge_index], mp.score, mp.dist
                 for last_edge_index in mp.last_index_list:
                     try:
                         new_score = s + score[i - 1][last_edge_index][0]
+                        last_score = min(last_score, new_score)
                         if edge.edge_index not in score[i]:
                             score[i][edge.edge_index] = [new_score, last_edge_index, mod_point]
                         else:
@@ -211,8 +214,9 @@ def calc_best_path(mr_list):
 
     # 绘制
     last_edge_index, edge_index = -1, -1
+    last_first = True
     for i in range(n - 1, 0, -1):
-        if i == n - 1:
+        if last_first:
             # 计算最后的最大得分，然后往前迭代
             min_score, mod_point = 1e20, None
             # 最小距离，当前边，上一次匹配的边，当前匹配点
@@ -222,25 +226,31 @@ def calc_best_path(mr_list):
                     last_edge_index, min_score, edge_index, mod_point = last_ei, s, ei, mp
             cur_edge, last_edge = map_edge_list[edge_index], map_edge_list[last_edge_index]
             # 标点
-            mp_list = mr_list[n - 1].match_point_list
-            for j, mp in enumerate(mp_list):
-                if edge_index == mp.edge_index:
-                    mr_list[n - 1].set_sel(j)
-                    break
-        else:
-            last_edge_index = score[i][edge_index][1]
-            mod_point = score[i][edge_index][2]
-            cur_edge, last_edge = map_edge_list[edge_index], map_edge_list[last_edge_index]
             mp_list = mr_list[i].match_point_list
             for j, mp in enumerate(mp_list):
                 if edge_index == mp.edge_index:
                     mr_list[i].set_sel(j)
                     break
+        else:
+            try:
+                last_edge_index = score[i][edge_index][1]
+                mod_point = score[i][edge_index][2]
+                cur_edge, last_edge = map_edge_list[edge_index], map_edge_list[last_edge_index]
+                mp_list = mr_list[i].match_point_list
+                for j, mp in enumerate(mp_list):
+                    if edge_index == mp.edge_index:
+                        mr_list[i].set_sel(j)
+                        break
+            except KeyError:
+                print i
         edge_index = last_edge_index
         last_point = mr_list[i - 1].point
         trace = get_trace_dyn(last_edge, cur_edge, last_point, mod_point)
-        if len(trace) != 0:
+        last_first = mr_list[i].first
+        try:
             draw_seg(trace, 'b')
+        except TypeError:
+            print i
 
 
 def calc_node_dict(node):
