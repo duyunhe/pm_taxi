@@ -112,6 +112,11 @@ def get_diff(e0, e1):
     return math.fabs(de)
 
 
+def get_guass_proc(dist):
+    sig = 20.0
+    return 1.0 / (math.sqrt(2.0 * math.pi) * sig) * math.exp(-(dist * dist) / (2.0 * sig * sig))
+
+
 def point_project_edge(point, edge):
     n0, n1 = edge.node0, edge.node1
     sp0, sp1 = n0.point, n1.point

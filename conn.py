@@ -537,7 +537,7 @@ def zx_with_zd_time(mark, begin_time):
     conn = cx_Oracle.connect('lishui', 'lishui', '192.168.11.88:1521/orcl', threaded=True)
 
     veh_list = get_vehicle_spe(conn, mark)
-    veh_list = ['ATC160']
+    veh_list = ['AT7811']
     cursor = conn.cursor()
     tup_list = []
     sql = "update tb_vehicle set el = :1, gps_no_data = :2, dif2 = :3, match_point = :4, jjq_point" \
@@ -567,12 +567,12 @@ def zx_with_zd_time(mark, begin_time):
         match = []
         map_med = None
         if len(trace) != 0:
-            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, 4)
+            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, 23)
             if dif is not None:
                 dif = dif * 60
         tup = (el, gps_no_data, dif, len(match), len(jjq), map_med, veh)
         tup_list.append(tup)
-        cursor.executemany(sql, tup_list)
+        # cursor.executemany(sql, tup_list)
         # conn.commit()
         tup_list = []
 

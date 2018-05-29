@@ -52,7 +52,7 @@ class MatchResult(object):
     """
     class MatchPoint(object):
         """
-        edge_index, match_point, [last_index1, last_index2...], dist, 
+        edge_index, match_point, [last_index1, last_index2...], dist, score
         """
         def __init__(self, edge_index, mod_point, last_index_list, dist, score):
             self.edge_index, self.last_index_list = edge_index, last_index_list

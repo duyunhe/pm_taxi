@@ -11,7 +11,7 @@ import numpy as np
 
 def get_vehicle(conn):
     cursor = conn.cursor()
-    sql = 'select vehicle_num from tb_vehicle where gps_no_data = 1 and mark != 101'
+    sql = 'select vehicle_num from tb_vehicle'
 
     cursor.execute(sql)
     veh_list = []
@@ -37,14 +37,14 @@ def get_vehicle_by_mark(conn, mark):
 
 
 def get_last_digit(veh):
-    return int(veh[-2:])
+    return int(veh[-1:])
 
 
 def save_veh(conn, veh_list):
     cursor = conn.cursor()
     tup_list = []
     for veh in veh_list:
-        mark = 102
+        mark = get_last_digit(veh)
         tup_list.append((mark, veh))
     sql = "update tb_vehicle set mark = :1 where vehicle_num = :2"
     cursor.executemany(sql, tup_list)
@@ -66,8 +66,8 @@ def calc_static(conn):
 
 def main():
     conn = oracle_util.get_connection()
-    # veh_list = get_vehicle(conn)
-    calc_static(conn)
+    veh_list = get_vehicle(conn)
+    save_veh(conn, veh_list)
     conn.close()
 
 
