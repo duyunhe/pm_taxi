@@ -326,7 +326,7 @@ def get_max_match1(trace, trace_list, jjq, offset):
 
 
 def get_trace_dist_with_matching(trace, bi, ei, ti):
-    if ti >= 0:
+    if ti >= -1:
         dist = map_matching.matching_draw(trace[bi: ei + 1])
         return dist
     else:
