@@ -55,7 +55,7 @@ def get_jjq(conn, veh, begin_time):
     str_bt = begin_time.strftime('%Y-%m-%d %H:%M:%S')
     end_time = begin_time + timedelta(days=1)
     str_et = end_time.strftime('%Y-%m-%d %H:%M:%S')
-    sql = "select vhic, shangche, xiache, zhongduan, zhongxin, jicheng from TB_JJQ t where vhic = '{0}'" \
+    sql = "select vhic, shangche, xiache, zhongduan, zhongxin, jicheng from tb_citizen_2018 t where vhic = '{0}'" \
           " and shangche >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') and " \
           "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format(veh, str_bt, str_et)
     cursor = conn.cursor()
@@ -78,18 +78,44 @@ def get_jjq(conn, veh, begin_time):
     return rec_list
 
 
-def query_diary(date):
-    conn = cx_Oracle.connect('hz', 'hz', '192.168.11.88:1521/orcl')
+def split_trace(veh, trace):
+    trace_list = []
+    last_state = -1
+    bi, ei, idx = -1, -1, 0
+    for data in trace:
+        state = data.state
+        if state != last_state:
+            if state == 0:          # 重车结束
+                load_len = ei - bi + 1
+                if load_len >= 2:   # 跳重车干扰
+                    sp = trace[ei].stime - trace[bi].stime
+                    trace_list.append([bi, ei, sp.total_seconds() / 60])
+            else:      # 新的重车开始
+                bi = idx
+        else:
+            ei = idx
+        idx += 1
+        last_state = state
+    return trace_list
+
+
+def query_diary(conn, date):
     cursor = conn.cursor()
     bt = time.clock()
     begin_time = datetime(2018, 5, date)
     print "date", date
-    str_bt = begin_time.strftime('%Y-%m-%d 08:00:00')
-    str_et = begin_time.strftime('%Y-%m-%d 20:00:00')
+    str_bt = begin_time.strftime('%Y-%m-%d 00:00:00')
+    str_et = begin_time.strftime('%Y-%m-%d 23:59:59')
 
     sql = "select vehicle_num, px, py, state, speed, speed_time from TB_GPS_1805 t" \
           " where speed_time > to_date('{0}', 'yyyy-mm-dd HH24:mi:ss') " \
           "and speed_time < to_date('{1}', 'yyyy-mm-dd HH24:mi:ss')".format(str_bt, str_et)
+
+    sql = "select vehicle_num, px, py, state, speed, speed_time from TB_GPS_1805 t" \
+          " where speed_time > to_date('{0}', 'yyyy-mm-dd HH24:mi:ss') " \
+          "and speed_time <= to_date('{1}', 'yyyy-mm-dd HH24:mi:ss') and vehicle_num='" \
+          "浙AT0387'".format(str_bt, str_et)
+
     cursor.execute(sql)
     info_list = []
     for item in cursor.fetchall():
@@ -101,6 +127,15 @@ def query_diary(date):
     trace_map = split_into_cars(info_list)
     et = time.clock()
     print et - bt
-    bt = time.clock()
 
-    conn.close()
+    for veh, trace in trace_map.iteritems():
+        t_list = split_trace(veh, trace)
+
+
+def main():
+    conn = cx_Oracle.connect('hz', 'hz', '192.168.11.88:1521/orcl')
+    query_diary(conn, 1)
+
+
+main()
+
