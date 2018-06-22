@@ -8,7 +8,7 @@ import cx_Oracle
 from datetime import timedelta, datetime
 from math import *
 import numpy as np
-from geo import bl2xy, calc_dist
+from geo import bl2xy, calc_dist, xy2bl
 import pre
 from multiprocessing import Process, Pool
 import time
@@ -104,7 +104,8 @@ def get_vehicle(conn):
 
 
 def get_vehicle_spe(conn, mark):
-    sql = "select rownum, t.* from TB_VEHICLE t where zd_median < -500 and zd_mean < -500 and to_number(match_point) >= 7" \
+    sql = "select rownum, t.* from TB_VEHICLE t where zd_median < -500 and" \
+          " zd_mean < -500 and to_number(match_point) >= 7" \
           " and gps_median <= 30 and carstate_per > 60 and map_med is NULL"
     cursor = conn.cursor()
     cursor.execute(sql)
@@ -200,8 +201,19 @@ def get_gps_data(conn, begin_time, veh):
 
 
 def print_data(trace, bi, ei):
+    fp = open('./data/1.txt', 'w')
+    lx, ly = -1, -1
     for data in trace[bi:ei + 1]:
-        print data.state, data.car_state, data.speed, data.stime, data.px, data.py, data.dist
+        b, l = xy2bl(data.px, data.py)
+        if lx != -1:
+            dist = calc_dist([lx, ly], [data.px, data.py])
+        else:
+            dist = 10.01
+        if dist > 10:
+            fp.write("{0},{1},{2},{3}\n".format(data.px, data.py, l, b))
+        lx, ly = data.px, data.py
+        # print data.state, data.car_state, data.speed, data.stime, data.px, data.py, data.dist
+    fp.close()
         
 
 def print_data_by_time(trace, begin_time, end_time):
@@ -415,6 +427,7 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     :param trace_list: 分割后的每段gps的起点和终点index (list)
     :param jjq: 计价器数据 (list)  (veh, dep_time, dest_time, jc_time, zd, zx, yanshi)
     :param ys: 延时seconds
+    :param pos: debug用
     :return: 
     """
     offset = get_offset(trace, trace_list, jjq)
@@ -426,13 +439,16 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     matching_list = []      # matching 后得到的difference
 
     for i, j in match_list:
-        if i != pos:
+        if pos != -1 and i != pos:
             continue
         jjq_dep, jjq_dest, jc, zd, zx, _, lc = jjq[i][1:]
         adj_dep = jjq_dest + timedelta(minutes=offset_time)
         bi, ei, sp = trace_list[j]
         gps_dest = trace[ei].stime
+        # gps直接得到的轨迹
         dist = get_trace_dist(trace, bi, ei, i)
+        print_data(trace, bi, ei)
+        # gps匹配得到的轨迹
         dist1 = get_trace_dist_with_matching(trace, bi, ei, i)
 
         dist_diff = dist - lc * 100
@@ -551,8 +567,8 @@ def zx_with_zd_time(mark, begin_time):
         # begin_time = datetime.strptime('2017-09-01 00:00:00', '%Y-%m-%d %H:%M:%S')
         jjq = get_jjq(conn, veh, begin_time)
         trace = get_gps_data(conn, begin_time, veh)
-        # print_data(trace)
-        pre_trace(trace)
+
+        # pre_trace(trace)
         # trace = pre_traj(trace)
         t_list = split_trace(veh, trace)
         # print_jjq(jjq)
@@ -567,7 +583,7 @@ def zx_with_zd_time(mark, begin_time):
         match = []
         map_med = None
         if len(trace) != 0:
-            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, 23)
+            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, -1)
             if dif is not None:
                 dif = dif * 60
         tup = (el, gps_no_data, dif, len(match), len(jjq), map_med, veh)

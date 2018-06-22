@@ -68,16 +68,16 @@ def draw_edge_set(edge, edge_set, node):
 def draw_edge(e, c):
     x0, y0, x1, y1 = edge2xy(e)
     x, y = [x0, x1], [y0, y1]
-    plt.plot(x, y, c, linewidth=2)
+    plt.plot(x, y, c, linewidth=3)
     plt.text((x[0] + x[-1]) / 2, (y[0] + y[-1]) / 2, '{0}'.format(e.edge_index))
 
 
 def draw_edge_list(edge_list):
     for edge in edge_list:
         if edge.oneway is True:
-            draw_edge(edge, 'brown')
+            draw_edge(edge, 'gold')
         else:
-            draw_edge(edge, 'b')
+            draw_edge(edge, 'brown')
 
 
 def draw_nodes(node_list):
@@ -840,7 +840,7 @@ def DYN_MATCH(traj_order):
                 last_edge = map_edge_list[last_index]
                 candidate_edges = get_candidate_later(data, last_data, last_point, last_edge,
                                                       last_state, interval_time, cnt)
-                # if cnt == 27:
+                # if cnt == 9:
                 #     draw_edge_list(candidate_edges)
                 if len(candidate_edges) > 0:
                     # 正常情形
