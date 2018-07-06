@@ -487,6 +487,16 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     return offset_time, match_list, diff_median, diff_mean, matching_med
 
 
+def process_data(trace):
+    if len(trace) == 0:
+        return 0
+    cnt = 0
+    for data in trace:
+        if data.car_state == 0:
+            cnt += 1
+    return 100.0 * cnt / len(trace)
+
+
 def process_jjq(jjq_list):
     vec = []
     for jjq in jjq_list:
@@ -507,16 +517,6 @@ def process_jjq(jjq_list):
     arr = np.array(vec)
 
     return np.std(arr), np.median(arr), n
-
-
-def process_data(trace):
-    if len(trace) == 0:
-        return 0
-    cnt = 0
-    for data in trace:
-        if data.car_state == 0:
-            cnt += 1
-    return 100.0 * cnt / len(trace)
 
 
 def main():

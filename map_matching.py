@@ -489,7 +489,7 @@ def get_score(point, last_point, cur_edge):
     w0, w1 = 1.0, 10.0
     score = w0 * dist + w1 * (1 - angle)
     if math.fabs(angle) < math.cos(math.pi * 2 / 3):
-        score += 1000
+        score += 500
     return score, dist
 
 
@@ -520,7 +520,7 @@ def get_mod_points(taxi_data, candidate, last_point, last_edge, cnt=-1):
 
     for edge in candidate:
         score, dist = get_score(point, last_point, edge)
-        s2, d2 = get_st_score(point, last_point, edge, last_edge)
+        # s2, d2 = get_st_score(point, last_point, edge, last_edge)
         edge_list.append(edge)
         dist_list.append(dist)
         score_list.append(score)

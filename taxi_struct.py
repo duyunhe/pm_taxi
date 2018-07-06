@@ -8,10 +8,6 @@
 class TaxiData:
     def __init__(self, px, py, stime, state, speed):
         self.px, self.py, self.stime, self.state, self.speed = px, py, stime, state, speed
-        self.stop_index = -1
-
-    def set_index(self, index):
-        self.stop_index = index
 
 
 def cmp1(data1, data2):
