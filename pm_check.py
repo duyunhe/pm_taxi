@@ -55,7 +55,6 @@ def pre_meter(meter_list):
         # 上车，下车，里程，中心时间
         if last_dep_time == dep_time:
             continue
-        lc = int(lc)
         try:
             sp = zx - dest_time
             ys = int(sp.total_seconds())
@@ -91,7 +90,7 @@ def pre_trace(trace):
         try:
             if trace[i].state == 0 and trace[i - 1].state == 1 and trace[i + 1].state == 1:
                 data.state = 1
-        except KeyError:
+        except IndexError:
             pass
         new_trace.append(data)
 
@@ -182,6 +181,7 @@ def is_near_span(x, y):
 
 
 def get_offset(trace, trace_list, jjq):
+    off_map = {}
     off_set = set()
     m, n = len(trace_list), len(jjq)
     for i in range(n):
@@ -191,11 +191,21 @@ def get_offset(trace, trace_list, jjq):
             gps_dep = trace[ei].stime
             off = int((gps_dep - jjq_dep).total_seconds() / 60)
             if is_near_span(jc, sp):
-                off_set.add(off)
+                try:
+                    off_map[off] += 1
+                except KeyError:
+                    off_map[off] = 1
+    sorted()
+
     return off_set
 
 
+def get_max_match0(trace, trace_list, jjq, offset):
+    pass
+
+
 def get_max_match1(trace, trace_list, jjq, offset):
+    print len(offset)
     m, n = len(trace_list), len(jjq)
     max_match_cnt = 1
     match = {}
@@ -229,6 +239,7 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     :param pos: debug用
     :return: 
     """
+    bt = time.clock()
     offset = get_offset(trace, trace_list, jjq)
     match, offset_time = get_max_match1(trace, trace_list, jjq, offset)
     # match_list = sorted(match.items(), key=lambda d: d[0])
@@ -256,7 +267,7 @@ def query_gps(date):
     sql = "select vehicle_num, px, py, state, speed, speed_time from TB_GPS_1805 t" \
           " where speed_time > to_date('{0}', 'yyyy-mm-dd HH24:mi:ss') " \
           "and speed_time <= to_date('{1}', 'yyyy-mm-dd HH24:mi:ss') and vehicle_num='" \
-          "浙AT6983'".format(str_bt, str_et)
+          "浙AB9034'".format(str_bt, str_et)
 
     cursor.execute(sql)
     info_list = []
@@ -279,13 +290,13 @@ def query_meter(date):
     str_bt = begin_time.strftime('%Y-%m-%d 00:00:00')
     str_et = begin_time.strftime('%Y-%m-%d 23:59:59')
 
-    sql = "select vhic, shangche, xiache, jicheng, db_time from tb_citizen_2018 t where" \
+    sql = "select vhic, shangche, xiache, jicheng, db_time from tb_citizen_2018 t where " \
           "shangche >= to_date('{0}', 'yyyy-mm-dd hh24:mi:ss') and " \
           "shangche < to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format(str_bt, str_et)
 
     sql = "select vhic, shangche, xiache, jicheng, db_time from tb_citizen_2018 t where vhic = '{0}'" \
           " and shangche >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') and " \
-          "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format('AT6983', str_bt, str_et)
+          "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format('AB9034', str_bt, str_et)
 
     cursor.execute(sql)
     info_list = []
@@ -300,10 +311,19 @@ def query_meter(date):
     return meter_map
 
 
-def query_diary(date):
-    trace_map = query_gps(date)
-    meter_map = query_meter(date)
+def store_stat(rec_list):
+    conn = cx_Oracle.connect('hz', 'hz', '192.168.11.88:1521/orcl')
+    cursor = conn.cursor()
+    sql = "insert into tb_stat values(:1,:2,:3,:4)"
+    cursor.executemany(sql, rec_list)
+    conn.commit()
 
+
+def query_diary(date):
+    meter_map = query_meter(date)
+    trace_map = query_gps(date)
+
+    stat_list = []
     for veh, meter in meter_map.iteritems():
         try:
             trace = trace_map[veh]
@@ -314,7 +334,10 @@ def query_diary(date):
         trace = pre_trace(trace)
         tr_list = split_trace(trace)
         match, offset = match_jjq_gps(trace, tr_list, meter, 0, 0)
-        print len(match), len(meter), len(tr_list)
+        print veh, len(match), len(meter), len(tr_list)
+        stat_list.append((veh, len(match), len(meter), len(tr_list)))
+
+    # store_stat(stat_list)
 
 
 def main():
