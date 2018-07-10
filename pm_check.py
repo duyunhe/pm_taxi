@@ -23,6 +23,7 @@ def split_into_cars(data_list):
     taxi_trace_map = {}
     for data in data_list:
         veh, lng, lat, state, speed, stime = data[0:6]
+        veh = veh[-6:]
         state = int(state)
         if lng > 121 or lng < 119 or lat > 31 or lat < 29:
             continue
@@ -33,6 +34,37 @@ def split_into_cars(data_list):
         except KeyError:
             taxi_trace_map[veh] = [taxi_data, ]
     return taxi_trace_map
+
+
+def split_into_meters(meter_list):
+    meter_map = {}
+    for data in meter_list:
+        veh, dep_time, dest_time = data[0:3]
+        try:
+            meter_map[veh].append(data)
+        except KeyError:
+            meter_map[veh] = [data, ]
+    return meter_map
+
+
+def pre_meter(meter_list):
+    rec_list = []
+    last_dep_time = None
+    for data in meter_list:
+        veh, dep_time, dest_time, lc, zx = data[0:]
+        # 上车，下车，里程，中心时间
+        if last_dep_time == dep_time:
+            continue
+        lc = int(lc)
+        try:
+            sp = zx - dest_time
+            ys = int(sp.total_seconds())
+        except TypeError:
+            ys = -1
+        dt = dest_time - dep_time
+        rec_list.append((veh, dep_time, dest_time, dt.total_seconds() / 60, zx, ys, lc))
+        last_dep_time = dep_time
+    return rec_list
 
 
 def pre_trace(trace):
@@ -73,7 +105,7 @@ def process_jjq(jjq_list):
         vec.append(ys)
     n = len(vec)
     if n == 0:
-        return 0.0, 0.0, 0
+        return 0.0, 0.0, 0, len(jjq_list)
     arr = np.array(vec)
     # print vec
     qu, qd = np.percentile(arr, 75), np.percentile(arr, 25)
@@ -89,12 +121,13 @@ def process_jjq(jjq_list):
 
 
 def get_jjq(conn, veh, begin_time):
+    bt = time.clock()
     str_bt = begin_time.strftime('%Y-%m-%d %H:%M:%S')
     end_time = begin_time + timedelta(days=1)
     str_et = end_time.strftime('%Y-%m-%d %H:%M:%S')
     sql = "select vhic, shangche, xiache, jicheng, db_time from tb_citizen_2018 t where vhic = '{0}'" \
           " and shangche >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') and " \
-          "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format(veh, str_bt, str_et)
+          "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss')".format(veh, str_bt, str_et)
     cursor = conn.cursor()
     cursor.execute(sql)
     rec_list = []
@@ -113,6 +146,8 @@ def get_jjq(conn, veh, begin_time):
         dt = dest_time - dep_time
         rec_list.append((veh, dep_time, dest_time, dt.total_seconds() / 60, zx, ys, lc))
         last_dep_time = dep_time
+    et = time.clock()
+    print et - bt
     return rec_list
 
 
@@ -127,7 +162,7 @@ def split_trace(trace):
                 load_len = ei - bi + 1
                 if load_len >= 2:   # 跳重车干扰
                     sp = trace[ei].stime - trace[bi].stime
-                    trace_list.append([bi, ei, sp.total_seconds() / 60])
+                    trace_list.append([bi, ei, round(sp.total_seconds() / 60, 2), trace[bi].stime, trace[ei].stime])
             else:      # 新的重车开始
                 bi = idx
         else:
@@ -152,7 +187,7 @@ def get_offset(trace, trace_list, jjq):
     for i in range(n):
         jc, jjq_dep = jjq[i][3], jjq[i][2]
         for j in range(m):
-            bi, ei, sp = trace_list[j]
+            bi, ei, sp = trace_list[j][:3]
             gps_dep = trace[ei].stime
             off = int((gps_dep - jjq_dep).total_seconds() / 60)
             if is_near_span(jc, sp):
@@ -172,7 +207,7 @@ def get_max_match1(trace, trace_list, jjq, offset):
             jjq_dep, jc = jjq[i][2:4]
             tar_dep = jjq_dep + timedelta(minutes=off)
             for j in range(jq_j, m):
-                bi, ei, sp = trace_list[j]
+                bi, ei, sp = trace_list[j][:3]
                 gps_dep = trace[ei].stime
                 if is_near_time(tar_dep, gps_dep) and is_near_span(jc, sp):
                     cnt += 1
@@ -201,10 +236,11 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
 
 
 def insert_order(trace, jjq, match_list):
-    sql = "insert into tb_order "
+    sql = "insert into tb_order (:1, :2, :3, :4, :5, :6, :7)"
+    tup_list = []
 
 
-def query_diary(date):
+def query_gps(date):
     conn = cx_Oracle.connect('hz', 'hz', '192.168.11.88:1521/orcl')
     cursor = conn.cursor()
     bt = time.clock()
@@ -220,33 +256,65 @@ def query_diary(date):
     sql = "select vehicle_num, px, py, state, speed, speed_time from TB_GPS_1805 t" \
           " where speed_time > to_date('{0}', 'yyyy-mm-dd HH24:mi:ss') " \
           "and speed_time <= to_date('{1}', 'yyyy-mm-dd HH24:mi:ss') and vehicle_num='" \
-          "浙ATE586'".format(str_bt, str_et)
+          "浙AT6983'".format(str_bt, str_et)
 
     cursor.execute(sql)
     info_list = []
     for item in cursor.fetchall():
         info_list.append(item)
     et = time.clock()
-    print "select costs", et - bt
-    # select时间过长，先close
+    print "gps select costs", et - bt
     conn.close()
 
     trace_map = split_into_cars(info_list)
+    return trace_map
 
+
+def query_meter(date):
     conn = cx_Oracle.connect('hz', 'hz', '192.168.11.88:1521/orcl')
-    for veh, trace in trace_map.iteritems():
-        trace = pre_trace(trace)
-        jjq_veh = veh[-6:]
-        t_list = split_trace(trace)
+    cursor = conn.cursor()
+    bt = time.clock()
+    begin_time = datetime(2018, 5, date)
+    print "date", date
+    str_bt = begin_time.strftime('%Y-%m-%d 00:00:00')
+    str_et = begin_time.strftime('%Y-%m-%d 23:59:59')
 
-        jjq = get_jjq(conn, jjq_veh, begin_time)
-        ys_std, ys_median, ys_mean, jjq_len = process_jjq(jjq)
+    sql = "select vhic, shangche, xiache, jicheng, db_time from tb_citizen_2018 t where" \
+          "shangche >= to_date('{0}', 'yyyy-mm-dd hh24:mi:ss') and " \
+          "shangche < to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format(str_bt, str_et)
 
-        if len(trace) != 0:
-            match, offset = match_jjq_gps(trace, t_list, jjq, 0, -1)
+    sql = "select vhic, shangche, xiache, jicheng, db_time from tb_citizen_2018 t where vhic = '{0}'" \
+          " and shangche >= to_date('{1}', 'yyyy-mm-dd hh24:mi:ss') and " \
+          "shangche < to_date('{2}', 'yyyy-mm-dd hh24:mi:ss') order by shangche".format('AT6983', str_bt, str_et)
 
-            print offset
+    cursor.execute(sql)
+    info_list = []
+    for item in cursor.fetchall():
+        info_list.append(item)
+
+    et = time.clock()
+    print "select meter costs ", et - bt
+
     conn.close()
+    meter_map = split_into_meters(info_list)
+    return meter_map
+
+
+def query_diary(date):
+    trace_map = query_gps(date)
+    meter_map = query_meter(date)
+
+    for veh, meter in meter_map.iteritems():
+        try:
+            trace = trace_map[veh]
+        except KeyError:
+            print veh, "not found"
+            continue
+        meter = pre_meter(meter)
+        trace = pre_trace(trace)
+        tr_list = split_trace(trace)
+        match, offset = match_jjq_gps(trace, tr_list, meter, 0, 0)
+        print len(match), len(meter), len(tr_list)
 
 
 def main():
