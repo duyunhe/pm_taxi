@@ -73,11 +73,9 @@ def pre_trace(trace):
     for data in trace:
         cur_point = data
         if last_point is not None:
-            dist = calc_dist([cur_point.px, cur_point.py], [last_point.px, last_point.py])
+            # dist = calc_dist([cur_point.px, cur_point.py], [last_point.px, last_point.py])
             del_time = (cur_point.stime - last_point.stime).total_seconds()
-            if dist > 2000 and del_time < 60:
-                continue
-            elif del_time <= 5:
+            if del_time <= 5:
                 continue
             else:
                 new_trace.append(data)
@@ -195,21 +193,49 @@ def get_offset(trace, trace_list, jjq):
                     off_map[off] += 1
                 except KeyError:
                     off_map[off] = 1
-    sorted()
-
+    off_list = sorted(off_map.items(), key=lambda d: d[1], reverse=True)
+    # 取数量最多的前10
+    for data in off_list[:10]:
+        off_set.add(data[0])
     return off_set
 
 
 def get_max_match0(trace, trace_list, jjq, offset):
-    pass
+    # two handle
+    m, n = len(trace_list), len(jjq)
+    max_match_cnt = 1
+    match = {}
+    sel_off = None  # 以计价器时间为基准的偏移时间
+    round_cnt = 0
+    for off in offset:
+        temp_match = {}
+        i, j, cnt = 0, 0, 0
+        while i < n and j < m:
+            jjq_dep, jc = jjq[i][2:4]
+            ei, sp = trace_list[j][1:3]
+            gps_dep = trace[ei].stime
+            tar_dep = jjq_dep + timedelta(minutes=off)
+            if is_near_time(tar_dep, gps_dep) and is_near_span(jc, sp):
+                cnt += 1
+                temp_match[i] = j
+                i, j = i + 1, j + 1
+            elif tar_dep > gps_dep:
+                j = j + 1
+            else:
+                i = i + 1
+            round_cnt += 1
+        if cnt > max_match_cnt:
+            max_match_cnt, match, sel_off = cnt, temp_match, off
+    # print round_cnt
+    return match, sel_off
 
 
 def get_max_match1(trace, trace_list, jjq, offset):
-    print len(offset)
     m, n = len(trace_list), len(jjq)
     max_match_cnt = 1
     match = {}
     sel_off = None      # 以计价器时间为基准的偏移时间
+    round_cnt = 0
     for off in offset:
         cnt, jq_j = 0, 0
         temp_match = {}
@@ -219,6 +245,7 @@ def get_max_match1(trace, trace_list, jjq, offset):
             for j in range(jq_j, m):
                 bi, ei, sp = trace_list[j][:3]
                 gps_dep = trace[ei].stime
+                round_cnt += 1
                 if is_near_time(tar_dep, gps_dep) and is_near_span(jc, sp):
                     cnt += 1
                     temp_match[i] = j
@@ -226,6 +253,7 @@ def get_max_match1(trace, trace_list, jjq, offset):
                     break
         if cnt > max_match_cnt:
             max_match_cnt, match, sel_off = cnt, temp_match, off
+    print round_cnt
     return match, sel_off
 
 
@@ -239,10 +267,8 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     :param pos: debug用
     :return: 
     """
-    bt = time.clock()
     offset = get_offset(trace, trace_list, jjq)
-    match, offset_time = get_max_match1(trace, trace_list, jjq, offset)
-    # match_list = sorted(match.items(), key=lambda d: d[0])
+    match, offset_time = get_max_match0(trace, trace_list, jjq, offset)
     return match, offset_time
 
 
@@ -256,7 +282,6 @@ def query_gps(date):
     cursor = conn.cursor()
     bt = time.clock()
     begin_time = datetime(2018, 5, date)
-    print "date", date
     str_bt = begin_time.strftime('%Y-%m-%d 00:00:00')
     str_et = begin_time.strftime('%Y-%m-%d 23:59:59')
 
@@ -286,7 +311,7 @@ def query_meter(date):
     cursor = conn.cursor()
     bt = time.clock()
     begin_time = datetime(2018, 5, date)
-    print "date", date
+    # print "date", date
     str_bt = begin_time.strftime('%Y-%m-%d 00:00:00')
     str_et = begin_time.strftime('%Y-%m-%d 23:59:59')
 
@@ -320,6 +345,7 @@ def store_stat(rec_list):
 
 
 def query_diary(date):
+    print "date", date
     meter_map = query_meter(date)
     trace_map = query_gps(date)
 
