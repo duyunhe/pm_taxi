@@ -53,6 +53,16 @@ def pre_trace(trace):
         else:
             new_trace.append(data)
         last_point = cur_point
+    trace = new_trace
+    new_trace = []
+    for i, data in enumerate(trace):
+        try:
+            if trace[i].state == 0 and trace[i - 1].state == 1 and trace[i + 1].state == 1:
+                data.state = 1
+        except KeyError:
+            pass
+        new_trace.append(data)
+
     return new_trace
 
 
@@ -75,7 +85,7 @@ def process_jjq(jjq_list):
             vec.append(arr[i])
     arr = np.array(vec)
 
-    return np.std(arr), np.median(arr), n
+    return np.std(arr), np.median(arr), np.mean(arr), n
 
 
 def get_jjq(conn, veh, begin_time):
@@ -127,6 +137,11 @@ def split_trace(trace):
     return trace_list
 
 
+def is_near_time(x, y):
+    sp = y - x
+    return math.fabs(sp.total_seconds()) < 60
+
+
 def is_near_span(x, y):
     return math.fabs(x - y) < 2
 
@@ -145,6 +160,30 @@ def get_offset(trace, trace_list, jjq):
     return off_set
 
 
+def get_max_match1(trace, trace_list, jjq, offset):
+    m, n = len(trace_list), len(jjq)
+    max_match_cnt = 1
+    match = {}
+    sel_off = None      # 以计价器时间为基准的偏移时间
+    for off in offset:
+        cnt, jq_j = 0, 0
+        temp_match = {}
+        for i in range(n):
+            jjq_dep, jc = jjq[i][2:4]
+            tar_dep = jjq_dep + timedelta(minutes=off)
+            for j in range(jq_j, m):
+                bi, ei, sp = trace_list[j]
+                gps_dep = trace[ei].stime
+                if is_near_time(tar_dep, gps_dep) and is_near_span(jc, sp):
+                    cnt += 1
+                    temp_match[i] = j
+                    jq_j = j + 1
+                    break
+        if cnt > max_match_cnt:
+            max_match_cnt, match, sel_off = cnt, temp_match, off
+    return match, sel_off
+
+
 def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     """
     匹配计价器与GPS数据
@@ -157,59 +196,12 @@ def match_jjq_gps(trace, trace_list, jjq, ys, pos):
     """
     offset = get_offset(trace, trace_list, jjq)
     match, offset_time = get_max_match1(trace, trace_list, jjq, offset)
-    diff_list = []
-    diff_median, diff_mean = None, None
-    match_list = sorted(match.items(), key=lambda d: d[0])
-    jjq_vis = [0] * len(jjq)
-    matching_list = []      # matching 后得到的difference
+    # match_list = sorted(match.items(), key=lambda d: d[0])
+    return match, offset_time
 
-    for i, j in match_list:
-        if pos != -1 and i != pos:
-            continue
-        jjq_dep, jjq_dest, jc, zd, zx, _, lc = jjq[i][1:]
-        adj_dep = jjq_dest + timedelta(minutes=offset_time)
-        bi, ei, sp = trace_list[j]
-        gps_dest = trace[ei].stime
-        # gps直接得到的轨迹
-        dist = get_trace_dist(trace, bi, ei, i)
-        # print_data(trace, bi, ei)
-        # gps匹配得到的轨迹
-        # dist1 = get_trace_dist_with_matching(trace, bi, ei, i)
 
-        dist_diff = dist - lc * 100
-        # matching_diff = dist1 - lc * 100
-        matching_list.dist(dist_diff)
-        print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'adj: ' + str(adj_dep), jc, 'zx: ' + str(zx), \
-            'zd: ' + str(zd), gps_dest, '{0:.2f}'.format(sp), 'lc: ' + str(lc), 'dist: ' + str(dist), \
-            'dist1: ' + str(dist)
-        if dist >= 0:
-            diff_list.append(dist_diff)
-        jjq_vis[i] = 1
-    for i in range(len(jjq)):
-        if i != pos:
-            continue
-        if jjq_vis[i] == 0:
-            jjq_dep, jjq_dest = jjq[i][1:3]
-            lc = jjq[i][7]
-            gps_dep, gps_dest = jjq_dep + timedelta(seconds=ys), jjq_dest + timedelta(seconds=ys)
-            dist, dist1 = get_trace_dist_from_time(trace, gps_dep, gps_dest, i)
-            dist_diff = dist - lc * 100
-            matching_diff = dist1 - lc * 100
-            # if dist1 >= 0:
-            #     matching_list.append(matching_diff)
-            print i, 'sc: ' + str(jjq_dep), 'xc: ' + str(jjq_dest), 'lc: ' + str(lc), 'dist: ' + str(dist), \
-                'dist1: ' + str(dist1)
-            if dist >= 0:
-                diff_list.append(dist_diff)
-
-    if len(diff_list) != 0:
-        vec = np.array(diff_list)
-        diff_median = np.median(vec)
-        diff_mean = np.mean(vec)
-    vec = np.array(matching_list)
-    matching_med = np.median(vec)
-
-    return offset_time, match_list, diff_median, diff_mean, matching_med
+def insert_order(trace, jjq, match_list):
+    sql = "insert into tb_order "
 
 
 def query_diary(date):
@@ -236,24 +228,24 @@ def query_diary(date):
         info_list.append(item)
     et = time.clock()
     print "select costs", et - bt
+    # select时间过长，先close
     conn.close()
-    bt = time.clock()
+
     trace_map = split_into_cars(info_list)
-    et = time.clock()
-    print et - bt
 
     conn = cx_Oracle.connect('hz', 'hz', '192.168.11.88:1521/orcl')
     for veh, trace in trace_map.iteritems():
+        trace = pre_trace(trace)
         jjq_veh = veh[-6:]
         t_list = split_trace(trace)
+
         jjq = get_jjq(conn, jjq_veh, begin_time)
-        ys_std, ys_median, jjq_len = process_jjq(jjq)
+        ys_std, ys_median, ys_mean, jjq_len = process_jjq(jjq)
 
         if len(trace) != 0:
-            dif, match, dist_med, dist_mean, map_med = match_jjq_gps(trace, t_list, jjq, ys_median - 126, -1)
-            if dif is not None:
-                dif = dif * 60
-        print len(t_list), ys_median, jjq_len
+            match, offset = match_jjq_gps(trace, t_list, jjq, 0, -1)
+
+            print offset
     conn.close()
 
 
